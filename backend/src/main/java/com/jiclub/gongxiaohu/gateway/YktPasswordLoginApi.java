@@ -94,12 +94,16 @@ public class YktPasswordLoginApi {
                 log.warn("账号密码登录失败 code={} msg={}", code, msg);
                 return new LoginOutcome("", "", msg + "（code=" + code + "）");
             }
+            // 2026-11-23 CDP 抓包实测：verify_pwd_login 成功时 data={} 为空，
+            // 但响应 Set-Cookie 直接下发 sessionid（Max-Age=1209600，14 天），无需走 web_login。
             if (sid.isBlank()) {
-                // 有些版本 sessionid 在 body 里
-                sid = text(root.path("data"), "sessionid", "session_id", "sessionKey");
+                log.warn("登录成功但响应缺少 sessionid Set-Cookie");
+                return new LoginOutcome("", "", "登录成功但未获取到会话凭据，请重试");
             }
             String userId = text(root.path("data"), "user_id", "userId", "userid");
             if (userId.isBlank()) userId = text(root, "user_id", "userId");
+            if (userId.isBlank()) userId = fetchUserId(sid); // 从 user_info 补真实学号
+            if (userId.isBlank()) userId = "imported";
             log.info("账号密码登录成功 userId={} hasSession={}", mask(userId), !sid.isBlank());
             return new LoginOutcome(userId, sid, "登录成功");
         } catch (Exception e) {
@@ -121,8 +125,33 @@ public class YktPasswordLoginApi {
         return Base64.getEncoder().encodeToString(cipher.doFinal(password.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
 
+    /** 用 sessionid 调 user_info 获取真实学号（官方登录响应 data 为空）。 */
+    private String fetchUserId(String sessionId) {
+        try {
+            HttpResponse<String> resp = http.send(
+                    HttpRequest.newBuilder(URI.create(baseUrl + "/v/course_meta/user_info"))
+                            .header("User-Agent", UA)
+                            .header("Cookie", "sessionid=" + sessionId)
+                            .GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            JsonNode root = mapper.readTree(resp.body());
+            return text(root.path("data").path("user_profile"), "user_id", "userid", "id");
+        } catch (Exception e) {
+            log.debug("获取学号失败: {}", e.getMessage());
+            return "";
+        }
+    }
+
     private static String extractCookie(HttpResponse<?> resp, String name) {
-        for (String raw : resp.headers().allValues("Set-Cookie")) {
+        return extractCookieFromHeaders(resp.headers().allValues("Set-Cookie"), name);
+    }
+
+    /**
+     * 从 Set-Cookie 头列表提取指定 cookie。实测官方登录响应在 Set-Cookie 里直接下发
+     * sessionid（Max-Age=1209600，14 天）。兼容 Java HttpClient 把多个 Set-Cookie 合并成逗号分隔的情况。
+     */
+    public static String extractCookieFromHeaders(java.util.List<String> headers, String name) {
+        for (String raw : headers) {
             for (String part : raw.split(";")) {
                 String kv = part.trim();
                 int i = kv.indexOf('=');
@@ -130,6 +159,10 @@ public class YktPasswordLoginApi {
                     return kv.substring(i + 1).trim();
                 }
             }
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("(?i)(?:^|,)\\s*" + java.util.regex.Pattern.quote(name) + "=([^;,]+)")
+                    .matcher(raw);
+            if (m.find()) return m.group(1).trim();
         }
         return "";
     }

@@ -31,6 +31,19 @@ class PasswordLoginTest {
     }
 
     @Test
+    void shouldExtractSessionIdFromRealSetCookie() {
+        // 来自 2026-11-23 CDP 真实抓包：登录响应 Set-Cookie 直接下发 sessionid
+        String csrf = "csrftoken=S6aTPhANlQO4IaOMOLipKjm3ax8AeqyO; expires=Mon, 22-Nov-2027 13:16:26 GMT; Max-Age=31449600; Path=/; SameSite=None; Secure";
+        String sid = "sessionid=o11r0jvmpe6tkv9e7rv4onqzvwnkulit; expires=Mon, 07-Dec-2026 13:16:26 GMT; httponly; Max-Age=1209600; Path=/; SameSite=None; Secure";
+        assertThat(YktPasswordLoginApi.extractCookieFromHeaders(java.util.List.of(csrf, sid), "sessionid"))
+                .isEqualTo("o11r0jvmpe6tkv9e7rv4onqzvwnkulit");
+        // 兼容 Java HttpClient 合并成单头的情况
+        String merged = csrf + ", " + sid;
+        assertThat(YktPasswordLoginApi.extractCookieFromHeaders(java.util.List.of(merged), "sessionid"))
+                .isEqualTo("o11r0jvmpe6tkv9e7rv4onqzvwnkulit");
+    }
+
+    @Test
     void passwordRecordDefaults() {
         AppProperties.PasswordLogin cfg =
                 new AppProperties.PasswordLogin(KEY, null, null);
