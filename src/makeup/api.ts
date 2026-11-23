@@ -228,6 +228,49 @@ export function fetchPreviewQuizzes(courseId: string): Promise<Quiz[]> {
   return request<Quiz[]>(`/preview/quizzes?courseId=${encodeURIComponent(courseId)}`);
 }
 
+// ============ 课程中心：课程 → 课时 → 课件/题目 ============
+export interface Activity {
+  activityId: string;
+  coursewareId: string;   // 历史课件必须用此 id 作 lesson_id
+  title: string;
+  type: number;
+  typeName: string;
+  createTime: number;
+  finished: boolean;
+  attended: boolean;
+}
+export interface Lesson {
+  lessonId: string;
+  lessonName: string;
+  courseName: string;
+  classroomName: string;
+  teacherName: string;
+  presentationIds: string[];
+}
+export interface Slide {
+  id: string;
+  page: number;
+  cover: string;
+  problem: string | null;
+}
+export interface Presentation {
+  id: string;
+  title: string;
+  cover: string;
+  slidesCount: number;
+  slides: Slide[];
+}
+
+/** 拉课程的全部活动/课时（courseId 用课表返回的 courseId） */
+export function fetchActivities(courseId: string): Promise<Activity[]> {
+  return request<Activity[]>(`/content/activities?courseId=${encodeURIComponent(courseId)}`);
+}
+
+/** 拉课件页（PPT 图片 + 教师题目） */
+export function fetchSlides(lessonId: string): Promise<Presentation[]> {
+  return request<Presentation[]>(`/content/slides?lessonId=${encodeURIComponent(lessonId)}`);
+}
+
 // ============ 随堂超时补答（真实随堂题，倒计时结束老师未收题仍可提交） ============
 /** 拉取某门课的随堂题（含未发布/已超时的题）。传 courseId，后端自动定位进行中课堂。 */
 export function fetchInClassQuizzes(courseId: string): Promise<Quiz[]> {

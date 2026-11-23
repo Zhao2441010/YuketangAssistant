@@ -37,6 +37,9 @@
 | `/api/v1/preview/quizzes?courseId=` | GET | 提前获取题目：老师发题前预览课件里已下发的题（博客第 5 节），无进行中课堂返回 409 |
 | `/api/v1/inclass/quizzes?courseId=` | GET | 随堂题：签到换 jwt → 拉课件 slides[].problem，含未发布/已超时题 |
 | `/api/v1/inclass/answers` | POST | 随堂超时补答：body `{courseId,problemId,problemType,answer}`，重复提交幂等覆盖 |
+| `/api/v1/content/activities?courseId=` | GET | 课程的全部活动/课时列表 |
+| `/api/v1/content/lesson?lessonId=` | GET | 课时元信息（含 presentationIds） |
+| `/api/v1/content/slides?lessonId=` | GET | 课件 PPT 页（cover 图片直链 + problem 教师题目） |
 
 实现要点：
 - **Mock 模式**：本地生成二维码与凭据，一键演示。

@@ -112,37 +112,86 @@ public class YktInClassQuizApi {
                             .GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             JsonNode root = mapper.readTree(resp.body());
-            if (root.path("code").asInt(0) != 0) {
-                log.warn("拉课件题失败 code={} msg={}", root.path("code").asInt(), root.path("msg").asText());
-                return result;
+            // 历史/已归档课堂用 jwt 的 fetch 会 401，fallback 到 lesson-summary（coursewareId 作 lesson_id）
+            if (resp.statusCode() != 200 || root.path("code").asInt(0) != 0) {
+                log.info("presentation/fetch 不可用，fallback 到 lesson-summary（lessonId={}）", lessonId);
+                return fetchProblemsViaSummary(sessionId, lessonId, presentationId);
             }
             JsonNode slides = root.path("data").path("slides");
             if (!slides.isArray()) return result;
-            int page = 0;
-            for (JsonNode slide : slides) {
-                page++;
-                JsonNode p = slide.path("problem");
-                if (!p.isObject() || p.isEmpty()) continue;
-                String pid = text(p, "problemId", "problem_id", "id");
-                int type = p.path("problemType").asInt(0);
-                String body = text(p, "body", "content", "stem");
-                body = body.replaceAll("<[^>]+>", "").trim();
-                List<String> options = new ArrayList<>();
-                JsonNode opts = p.path("options");
-                if (opts.isArray()) {
-                    for (JsonNode o : opts) {
-                        if (o.isTextual()) options.add(o.asText());
-                        else options.add(text(o, "key", "label") + ". " + text(o, "value", "text", "content"));
-                    }
-                }
-                // answers 非空表示已作答
-                boolean answered = p.path("answers").isArray() && p.path("answers").size() > 0;
-                result.add(new RawProblem(pid, type, body, options, page,
-                        slide.path("coverAlt").asText(""), answered));
-            }
+            result.addAll(parseSlides(slides));
             log.info("随堂题拉取：presentation={} 题数={}", presentationId, result.size());
         } catch (Exception e) {
             log.warn("拉随堂题异常 presentation={}: {}", presentationId, e.getMessage());
+        }
+        return result;
+    }
+
+    /** fallback：用 lesson-summary/student/presentation 拉题（无需 jwt，coursewareId 作 lesson_id）。 */
+    private List<RawProblem> fetchProblemsViaSummary(String sessionId, String lessonId, String presentationId) {
+        List<RawProblem> result = new ArrayList<>();
+        try {
+            String url = baseUrl + "/api/v3/lesson-summary/student/presentation?presentation_id="
+                    + URLEncoder.encode(presentationId, StandardCharsets.UTF_8)
+                    + "&lesson_id=" + URLEncoder.encode(lessonId, StandardCharsets.UTF_8);
+            HttpResponse<String> resp = http.send(
+                    HttpRequest.newBuilder(URI.create(url))
+                            .header("User-Agent", UA)
+                            .header("Accept", "application/json, text/plain, */*")
+                            .header("Cookie", "sessionid=" + sessionId)
+                            .header("xtbz", "ykt")
+                            .GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            JsonNode root = mapper.readTree(resp.body());
+            if (root.path("code").asInt(0) != 0) {
+                log.warn("lesson-summary 拉题失败 code={} msg={}", root.path("code").asInt(), root.path("msg").asText());
+                return result;
+            }
+            result.addAll(parseSlides(root.path("data").path("slides")));
+            log.info("lesson-summary 随堂题拉取：题数={}", result.size());
+        } catch (Exception e) {
+            log.warn("lesson-summary 拉题异常: {}", e.getMessage());
+        }
+        return result;
+    }
+
+    /**
+     * 解析 slides 中的 problem，兼容两种真实结构：
+     * <ul>
+     *   <li>老结构：problem 直接含 body/options/problemType</li>
+     *   <li>新结构（实测历史课件）：problem.content 才是题目正文，problemId 在 content 里，
+     *       option 为 {key,value}，answer 为数组</li>
+     * </ul>
+     */
+    private List<RawProblem> parseSlides(JsonNode slides) {
+        List<RawProblem> result = new ArrayList<>();
+        if (!slides.isArray()) return result;
+        int page = 0;
+        for (JsonNode slide : slides) {
+            page++;
+            JsonNode outer = slide.path("problem");
+            if (!outer.isObject() || outer.isEmpty()) continue;
+            // 展开 content 嵌套层
+            JsonNode p = outer.has("content") && outer.path("content").isObject()
+                    ? outer.path("content") : outer;
+            String pid = text(outer, "problemId", "problem_id", "id");
+            if (pid.isBlank()) pid = text(p, "problemId", "problem_id", "id");
+            int type = p.path("problemType").asInt(outer.path("problemType").asInt(0));
+            String body = text(p, "body", "title", "stem");
+            body = body.replaceAll("<[^>]+>", "").trim();
+            List<String> options = new ArrayList<>();
+            JsonNode opts = p.path("options");
+            if (opts.isArray()) {
+                for (JsonNode o : opts) {
+                    if (o.isTextual()) options.add(o.asText());
+                    else options.add(text(o, "key", "label") + ". " + text(o, "value", "text", "content"));
+                }
+            }
+            // answers 非空表示已作答（历史课件里是 answer 数组）
+            boolean answered = (p.path("answers").isArray() && p.path("answers").size() > 0)
+                    || (p.path("answer").isArray() && p.path("answer").size() > 0);
+            result.add(new RawProblem(pid, type, body, options, page,
+                    text(slide, "cover", "coverAlt"), answered));
         }
         return result;
     }

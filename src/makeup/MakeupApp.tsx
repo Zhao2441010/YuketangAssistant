@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ArrowLeft, BookOpen, Check, CheckCircle2, ChevronRight, Clock,
-  Loader2, LogOut, MapPin, Plus, RefreshCw, Send, User, Wifi, X
+  Layers, Loader2, LogOut, MapPin, Plus, RefreshCw, Send, User, Wifi, X
 } from 'lucide-react';
 import {
   Course, Quiz, SubmitResult, checkSession, clearToken, fetchCourses,
   fetchInClassQuizzes, getToken, imageUrl, keepAlive, logout, saveDraft, submitInClassAnswer, uploadImage
 } from './api';
 import LoginView from './LoginView';
+import CourseCenter from './CourseCenter';
 
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 
@@ -240,6 +241,8 @@ export default function MakeupApp() {
   const [userId, setUserId] = useState<string>('');
 
   const [courses, setCourses] = useState<Course[]>([]);
+  const [allCourses, setAllCourses] = useState<Course[]>([]);
+  const [showCourseCenter, setShowCourseCenter] = useState(false);
   const [loadingCourses, setLoadingCourses] = useState(true);
   const [activeCourse, setActiveCourse] = useState<Course | null>(null);
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
@@ -303,6 +306,7 @@ export default function MakeupApp() {
     try {
       const data = await fetchCourses();
       setCourses(data.liveCourses);
+      setAllCourses(data.allCourses);
     } catch (e) {
       const code = (e as Error & { code?: number }).code;
       if (code === 401) {
@@ -387,6 +391,11 @@ export default function MakeupApp() {
     }
   };
 
+  // ============ 课程中心（全部课程 → 课时 → 课件/题目）============
+  if (showCourseCenter) {
+    return <CourseCenter courses={allCourses} onBack={() => setShowCourseCenter(false)} />;
+  }
+
   // ============ 视图 1：当前上课中的课程 ============
   if (!activeCourse) {
     return (
@@ -405,6 +414,9 @@ export default function MakeupApp() {
               <User className="w-3.5 h-3.5 shrink-0" />
               <span className="truncate">{userId}</span>
             </div>
+            <button onClick={() => setShowCourseCenter(true)} title="课程中心" className="w-8 h-8 rounded-full bg-[#007AFF]/10 flex items-center justify-center text-[#007AFF] hover:bg-[#007AFF]/20">
+              <Layers className="w-4 h-4" />
+            </button>
             <button onClick={() => void loadCourses()} className="w-8 h-8 rounded-full bg-[#F2F2F7] flex items-center justify-center text-[#8E8E93] hover:bg-[#E5E5EA]">
               <RefreshCw className={`w-4 h-4 ${loadingCourses ? 'animate-spin' : ''}`} />
             </button>
@@ -415,6 +427,19 @@ export default function MakeupApp() {
         </header>
 
         <main className="max-w-3xl mx-auto px-5 py-6 space-y-4">
+          {/* 课程中心入口 */}
+          <button onClick={() => setShowCourseCenter(true)}
+            className="w-full bg-gradient-to-r from-[#007AFF] to-[#5AC8FA] rounded-3xl p-4 text-left text-white shadow-sm active:scale-[0.99] transition-all flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-white/20 flex items-center justify-center shrink-0">
+              <Layers className="w-5 h-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-sm font-bold">课程中心</h2>
+              <p className="text-[11px] text-white/80 mt-0.5">查看全部课程 · 课时课件 · 教师题目</p>
+            </div>
+            <ChevronRight className="w-4 h-4 shrink-0" />
+          </button>
+
           <div className="flex items-center gap-2 text-xs text-[#8E8E93]">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             实时检测开课状态 · 共 {courses.length} 门进行中
