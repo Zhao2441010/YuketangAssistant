@@ -1,0 +1,59 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ykt-backend
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 45MB   # 9 张 * 5MB
+
+# 工小湖后端配置
+gongxiaohu:
+  # 演示模式：mock = 使用内置假数据，开箱即用；real = 调用真实雨课堂接口
+  # 当前学校为「长江雨课堂」，已切换为 real + changjiang.yuketang.cn
+  mode: real
+
+  # 免扫码进班签名设置
+  join-signature:
+    secret: dev-only-secret-change-me   # 生产环境请替换为随机密钥，勿提交到仓库
+    ttl-seconds: 300                     # 临时进班链接有效期 5 分钟
+
+  # 真实模式下网关配置（mode: real 时生效）
+  # 说明：除 auth-status 与 join-lesson 外，以下路径来自博客描述/约定，
+  # 真实接口路径需根据你自己的抓包结果在配置文件或启动参数中覆盖。
+  ykt-gateway:
+    # 长江雨课堂（region=changjiang）：网页版 changjiang.yuketang.cn，扫码走其 wsapp。
+    # 2026-11-23 实测：该域名 WebSocket 可返回真实微信二维码，user_info 返回 csrftoken，
+    # courses/list 返回 401 "Cookie has no sessionid"（证明需 sessionid）。四个区域会话互不通用。
+    region: changjiang                          # standard | hetang | changjiang | huanghe
+    base-url: https://changjiang.yuketang.cn
+    ws-url: wss://changjiang.yuketang.cn/wsapp/
+    connect-timeout-ms: 10000
+    read-timeout-ms: 35000               # 与 30 秒长轮询匹配
+    endpoints:
+      auth-qrcode: /custom/auth/v1/qrcode              # 抓包待确认：官方二维码 ticket 接口
+      course-list: /v2/api/web/courses/list           # ✅实测可用：identity=2，返回 data.list
+      live-list-v3: /api/v3/classroom/on-lesson-upcoming-exam  # ✅来源开源项目：正在上课+待考试
+      lesson-detail: /v2/web/lesson/detail             # 抓包待确认
+      join-lesson: /v2/web/join_lesson                 # 博客第 1 节
+      quiz-detail: /v2/web/quiz/detail                 # 抓包待确认
+      quiz-list: /v2/web/quiz/list                     # 抓包待确认
+      submit-answer: /v2/web/quiz/submit               # 抓包待确认
+      auth-status: /custom/auth/v1/auth/status         # 博客第 2 节（本版未启用）
+
+  # 账号密码登录（RSA 公钥与滑块 appid 来自官方前端 login.js；滑块需用户手动完成）
+  password-login:
+    endpoint: /pc/login/verify_pwd_login/
+    captcha-app-id: "2091064951"
+    rsa-public-key: "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCQBaPX7crEH6/jS4hRD7lZrsFRIdfwEhH30onFnrnWxiRATzP9WEneXJEZHopmzudkNS5bDp51SCnBUGGgfL/sUUrlrhV2xnTSe1jRl924ejV5rkVkiii85jp9G8eJrJN6klHs0PfYfp4EVJ8688qpi5iETtg+q4ITocyEyD1+7wIDAQAB"
+
+  # 草稿图上传本地存储目录（相对路径或绝对路径）
+  upload-dir: ./data/draft-images
+
+logging:
+  level:
+    site.jiclub.gongxiaohu: debug
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"

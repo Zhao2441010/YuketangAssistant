@@ -1,0 +1,44 @@
+# ============ 依赖与包管理 ============
+node_modules/
+.pnpm-store/
+.npm/
+
+# ============ 构建产物 ============
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# ============ 环境变量与凭据（敏感） ============
+.env
+.env.*
+!.env.example
+
+# ============ 本地工作数据（agent 记忆/日志，非源码） ============
+.workbuddy/
+
+# ============ 临时抓包/登录凭据文件（含隐私，绝不提交） ============
+poll-result.json
+qr-response.json
+qr-ticket.txt
+real-*.json
+exercise-course.json
+*-qrcode.jpg
+
+# ============ 日志 ============
+*.log
+logs/
+
+# ============ 编辑器 / IDE ============
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*.orig
+*.bak
+
+# ============ 操作系统 ============
+.DS_Store
+Thumbs.db
+desktop.ini

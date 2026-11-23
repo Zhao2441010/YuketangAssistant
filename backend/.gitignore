@@ -1,0 +1,29 @@
+# ============ Maven 构建产物 ============
+target/
+
+# ============ 本地运行时数据（草稿图上传目录） ============
+data/
+
+# ============ 临时抓包/登录凭据文件（含隐私，绝不提交） ============
+poll-result.json
+qr-response.json
+qr-ticket.txt
+real-*.json
+exercise-course.json
+exercise_solver_source.py
+*-qrcode.jpg
+
+# ============ 日志 ============
+*.log
+logs/
+
+# ============ 编辑器 / IDE ============
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# ============ 操作系统 ============
+.DS_Store
+Thumbs.db
