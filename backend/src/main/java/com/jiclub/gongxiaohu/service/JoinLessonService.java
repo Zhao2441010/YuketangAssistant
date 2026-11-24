@@ -66,19 +66,22 @@ public class JoinLessonService {
                     new CachedCredential(credential, System.currentTimeMillis() + ttlMs));
         }
 
+        // 按博客第 1 节：正规在读学生学号已在班级名单，老师点「开始上课」后 status=1，
+        // 直接用 session_key(sessionid) 访问官方 join_lesson 页即可进班，无需旁听生的 sign 签名。
+        // 之前用本地 secret 伪造 sign + 错误域名 ykt.io 是走偏了——官方不认自定义 sign。
         long ts = Instant.now().getEpochSecond();
-        String secret = properties.joinSignature().secret();
-        String sign = SignUtil.sign(secret, lesson.lessonId(), ts);
+        String baseUrl = properties.yktGateway().baseUrl();
+        if (baseUrl == null || baseUrl.isBlank()) baseUrl = "https://changjiang.yuketang.cn";
         String joinUrl = UriComponentsBuilder
-                .fromHttpUrl("https://changjiang.ykt.io")
+                .fromHttpUrl(baseUrl)
                 .path("/v2/web/join_lesson")
                 .queryParam("lesson_id", lesson.lessonId())
-                .queryParam("sign", sign)
-                .queryParam("ts", ts)
                 .build()
                 .toUriString();
 
-        log.info("签发进班链接 course={} lesson={} ts={}", lesson.courseId(), lesson.lessonId(), ts);
+        // 凭据即 sessionid 本身（官方 WebView 机制：访问课堂页时带 sessionid cookie 即进班）
+        credential = sessionKey.startsWith("sessionid=") ? sessionKey.substring("sessionid=".length()) : sessionKey;
+        log.info("签发进班链接 course={} lesson={} url={}", lesson.courseId(), lesson.lessonId(), joinUrl);
         return new JoinLessonResult(
                 lesson.lessonId(),
                 lesson.courseName(),

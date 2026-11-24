@@ -1,0 +1,30 @@
+.page { min-height: 100vh; padding: 32rpx 24rpx; }
+.header { display: flex; align-items: center; justify-content: space-between; padding: 12rpx 8rpx 24rpx; }
+.greeting { display: block; font-size: 36rpx; font-weight: 700; }
+.subtitle { display: block; font-size: 22rpx; color: #8E8E93; margin-top: 6rpx; }
+.uid { font-size: 22rpx; color: #8E8E93; max-width: 200rpx; }
+.entry-card {
+  display: flex; align-items: center; gap: 20rpx;
+  background: linear-gradient(135deg, #007AFF, #5AC8FA);
+  border-radius: 28rpx; padding: 28rpx; margin-bottom: 28rpx;
+}
+.entry-icon {
+  width: 72rpx; height: 72rpx; border-radius: 20rpx; background: rgba(255,255,255,0.25);
+  color: #fff; font-size: 32rpx; font-weight: 700; text-align: center; line-height: 72rpx;
+}
+.entry-body { flex: 1; }
+.entry-title { display: block; color: #fff; font-size: 30rpx; font-weight: 700; }
+.entry-desc { display: block; color: rgba(255,255,255,0.8); font-size: 22rpx; margin-top: 6rpx; }
+.arrow { color: #fff; font-size: 40rpx; }
+.status-line { display: flex; align-items: center; gap: 10rpx; font-size: 22rpx; color: #8E8E93; margin: 8rpx 8rpx 20rpx; }
+.dot { width: 12rpx; height: 12rpx; border-radius: 50%; background: #34C759; }
+.course-card { background: #fff; border-radius: 28rpx; padding: 28rpx; margin: 20rpx 0; }
+.course-head { display: flex; align-items: center; justify-content: space-between; }
+.course-name { font-size: 30rpx; font-weight: 700; flex: 1; }
+.badge { background: #E8F8ED; color: #34C759; font-size: 20rpx; padding: 6rpx 14rpx; border-radius: 20rpx; }
+.course-teacher { display: block; font-size: 24rpx; color: #8E8E93; margin-top: 10rpx; }
+.course-actions { display: flex; gap: 16rpx; margin-top: 24rpx; }
+.action { flex: 1; font-size: 26rpx; padding: 12rpx 0; }
+.ghost-btn { background: #F2F2F7; color: #007AFF; font-size: 26rpx; border: none; }
+.ghost-btn::after { border: none; }
+.error-box { background: #FFF1F0; color: #CF4C4C; border-radius: 16rpx; padding: 20rpx; font-size: 24rpx; margin-bottom: 20rpx; }

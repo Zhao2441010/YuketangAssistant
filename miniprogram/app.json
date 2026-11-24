@@ -1,0 +1,20 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/login/login",
+    "pages/courses/courses",
+    "pages/activities/activities",
+    "pages/slides/slides",
+    "pages/quiz/quiz"
+  ],
+  "window": {
+    "navigationBarTitleText": "工小湖",
+    "navigationBarBackgroundColor": "#007AFF",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#F2F2F7",
+    "backgroundTextStyle": "light"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}

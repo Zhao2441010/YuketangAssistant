@@ -1,0 +1,74 @@
+<view class="page">
+  <view wx:if="{{loading}}" class="empty-tip">正在加载课件…</view>
+  <view wx:if="{{error}}" class="error-box">{{error}}</view>
+
+  <block wx:if="{{!loading && presentations.length > 0}}">
+    <!-- 测验区：题目置顶 -->
+    <view wx:if="{{quizItems.length > 0}}" class="quiz-panel">
+      <view class="quiz-header" bindtap="toggleQuiz">
+        <view class="quiz-title-wrap">
+          <text class="quiz-icon">题</text>
+          <view>
+            <text class="quiz-title">教师题目 · 测验区</text>
+            <text class="quiz-sub">共 {{quizItems.length}} 道 · 点击查看</text>
+          </view>
+        </view>
+        <text class="fold">{{showQuiz ? '收起' : '展开'}}</text>
+      </view>
+      <view wx:if="{{showQuiz}}" class="quiz-list">
+        <view class="quiz-item {{q.active ? 'active' : ''}}" wx:for="{{quizItems}}" wx:key="idx"
+              data-pi="{{item.presIdx}}" data-si="{{item.slideIdx}}" bindtap="jumpTo">
+          <view class="quiz-item-head">
+            <text class="q-badge">题{{index + 1}}</text>
+            <text class="q-meta">{{item.presTitle}} · P{{item.page}}</text>
+          </view>
+          <text class="q-body">{{item.body || '（题目见课件图片）'}}</text>
+          <text wx:if="{{item.answer}}" class="q-answer">参考答案：{{item.answer}}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 课件切换 -->
+    <scroll-view class="pres-tabs" scroll-x>
+      <view class="pres-tab {{index === presIndex ? 'active' : ''}}" wx:for="{{presentations}}" wx:key="id"
+            data-index="{{index}}" bindtap="switchPres">{{item.title}}（{{item.slidesCount}}页）</view>
+    </scroll-view>
+
+    <!-- 课件主体：左侧缩略图 + 右侧大图 -->
+    <view class="viewer">
+      <scroll-view class="thumbs" scroll-y>
+        <view class="thumb {{index === slideIndex ? 'active' : ''}}" wx:for="{{currentSlides}}" wx:key="id"
+              data-index="{{index}}" bindtap="goSlide">
+          <image wx:if="{{item.cover}}" class="thumb-img" src="{{item.cover}}" mode="aspectFill" lazy-load></image>
+          <view wx:else class="thumb-empty">—</view>
+          <text class="thumb-page">{{item.page}}</text>
+          <view wx:if="{{item.problem}}" class="thumb-dot"></view>
+        </view>
+      </scroll-view>
+
+      <view class="main-area">
+        <swiper class="slide-swiper" current="{{slideIndex}}" bindchange="onSwiperChange" duration="200">
+          <swiper-item wx:for="{{currentSlides}}" wx:key="id">
+            <view class="slide-box">
+              <image wx:if="{{item.cover}}" class="slide-img" src="{{item.cover}}" mode="aspectFit"></image>
+              <view wx:else class="slide-empty">该页暂无图片</view>
+            </view>
+          </swiper-item>
+        </swiper>
+        <view class="pager">
+          <button class="pager-btn" data-delta="-1" bindtap="prevSlide" disabled="{{slideIndex === 0}}">‹ 上一页</button>
+          <view class="page-input-wrap">
+            <text>第</text>
+            <input class="page-input" type="number" value="{{pageInput}}" bindinput="onPageInput" bindconfirm="goToPage" />
+            <text>/ {{currentSlides.length}} 页</text>
+          </view>
+          <button class="pager-btn" data-delta="1" bindtap="nextSlide" disabled="{{slideIndex >= currentSlides.length - 1}}">下一页 ›</button>
+        </view>
+      </view>
+    </view>
+  </block>
+
+  <view wx:if="{{!loading && presentations.length === 0 && !error}}" class="empty-tip">
+    该课时暂无可展示课件
+  </view>
+</view>

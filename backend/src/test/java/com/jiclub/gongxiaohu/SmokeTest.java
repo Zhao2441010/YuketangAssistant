@@ -41,14 +41,14 @@ class SmokeTest {
     }
 
     @Test
-    void joinLesson_shouldSignUrlAndRejectNotLiveCourse() throws Exception {
+    void joinLesson_shouldBuildOfficialUrlAndRejectNotLiveCourse() throws Exception {
         mvc.perform(post("/api/v1/lessons/join")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"courseId":"net","sessionKey":"test-session"}
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.joinUrl").value(org.hamcrest.Matchers.containsString("sign=")))
+                .andExpect(jsonPath("$.data.joinUrl").value(org.hamcrest.Matchers.containsString("/v2/web/join_lesson?lesson_id=")))
                 .andExpect(jsonPath("$.data.lessonId").value("lesson-net"));
 
         mvc.perform(post("/api/v1/lessons/join")

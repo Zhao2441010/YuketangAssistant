@@ -223,6 +223,24 @@ export function fetchQuizzes(courseId: string): Promise<Quiz[]> {
   return request<Quiz[]>(`/quizzes?courseId=${encodeURIComponent(courseId)}`);
 }
 
+/** 一键进班：后端按博客第 1 节生成官方 join_lesson 链接（带 sessionid 需在官方域登录）。 */
+export interface JoinLessonResult {
+  lessonId: string;
+  courseName: string;
+  joinUrl: string;
+  ts: number;
+  expiresAt: number;
+  credential: string;
+  fromCache: boolean;
+}
+export function joinLesson(courseId: string): Promise<JoinLessonResult> {
+  const sid = getSessionId();
+  return request<JoinLessonResult>('/lessons/join', {
+    method: 'POST',
+    body: JSON.stringify({ courseId, sessionKey: sid || '' })
+  });
+}
+
 /** 提前获取题目：老师发题前预览课件里已下发的题目（博客第 5 节）。 */
 export function fetchPreviewQuizzes(courseId: string): Promise<Quiz[]> {
   return request<Quiz[]>(`/preview/quizzes?courseId=${encodeURIComponent(courseId)}`);

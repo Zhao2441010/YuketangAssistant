@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import {
   Course, Quiz, SubmitResult, checkSession, clearToken, fetchCourses,
-  fetchInClassQuizzes, getToken, imageUrl, keepAlive, logout, saveDraft, submitInClassAnswer, uploadImage
+  fetchInClassQuizzes, getToken, imageUrl, joinLesson, keepAlive, logout, saveDraft, submitInClassAnswer, uploadImage
 } from './api';
 import LoginView from './LoginView';
 import CourseCenter from './CourseCenter';
@@ -354,6 +354,18 @@ export default function MakeupApp() {
     }
   };
 
+  /** 一键进班：按博客第 1 节用 session_key 换官方进班链接并打开课堂页。
+   *  Web 端跨域无法注入 sessionid cookie——若浏览器已在雨课堂登录则直接进班，否则提示。 */
+  const openOfficialClassroom = async (course: Course) => {
+    try {
+      const result = await joinLesson(course.courseId);
+      window.open(result.joinUrl, '_blank', 'noopener,noreferrer');
+      showToast('已打开官方课堂页；若未自动进班请先在雨课堂网页登录');
+    } catch (e) {
+      showToast(`打开课堂失败：${(e as Error).message}`);
+    }
+  };
+
   const patchAnswer = (quizId: string, patch: Partial<AnswerState>) => {
     setAnswers(prev => ({ ...prev, [quizId]: { ...(prev[quizId] ?? emptyAnswer()), ...patch } }));
   };
@@ -468,12 +480,21 @@ export default function MakeupApp() {
                   <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5 text-[#8E8E93]" />{course.timeRange}</span>
                   <span className="font-mono text-[#8E8E93]">放映至 P{course.currentSlide}/{course.totalSlides}</span>
                 </div>
-                <button
-                  onClick={() => void enterCourse(course)}
-                  className="w-full py-3 rounded-2xl bg-[#007AFF] text-white text-sm font-bold hover:bg-[#0066CC] active:scale-[0.99] transition-all flex items-center justify-center gap-1.5"
-                >
-                  直接进入 · 超时补答 <ChevronRight className="w-4 h-4" />
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => void enterCourse(course)}
+                    className="flex-1 py-3 rounded-2xl bg-[#007AFF] text-white text-sm font-bold hover:bg-[#0066CC] active:scale-[0.99] transition-all flex items-center justify-center gap-1.5"
+                  >
+                    进入补答 <ChevronRight className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => void openOfficialClassroom(course)}
+                    title="用 session_key 换取官方进班链接并打开课堂"
+                    className="px-4 py-3 rounded-2xl bg-white border border-[#007AFF]/30 text-[#007AFF] text-sm font-semibold hover:bg-[#007AFF]/5 active:scale-[0.99] transition-all flex items-center justify-center gap-1.5"
+                  >
+                    官方课堂 ↗
+                  </button>
+                </div>
               </div>
             ))
           )}

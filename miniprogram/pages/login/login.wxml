@@ -1,0 +1,56 @@
+<view class="page">
+  <view class="head">
+    <view class="logo">微</view>
+    <text class="title">绑定雨课堂账号</text>
+    <text class="subtitle">登录后即可查看课件与随堂补答</text>
+  </view>
+
+  <view class="tabs">
+    <view class="tab {{mode === 'qr' ? 'active' : ''}}" data-mode="qr" bindtap="switchMode">扫码登录</view>
+    <view class="tab {{mode === 'session' ? 'active' : ''}}" data-mode="session" bindtap="switchMode">会话导入</view>
+  </view>
+
+  <!-- 扫码登录 -->
+  <view wx:if="{{mode === 'qr'}}" class="panel">
+    <view wx:if="{{!qr}}" class="center">
+      <button class="primary-btn main-btn" bindtap="startQr" loading="{{loading}}">获取登录二维码</button>
+    </view>
+    <view wx:elif="{{viewState === 'success'}}" class="center success-box">
+      <text class="success-icon">✓</text>
+      <text class="success-text">登录成功</text>
+    </view>
+    <view wx:else class="center">
+      <image class="qr-img" src="{{qr.qrDataUrl}}" mode="aspectFit" wx:if="{{qr.qrDataUrl}}"></image>
+      <text class="tip">{{qr.mockMode ? '演示模式：点击下方模拟确认' : '请用微信扫码并在手机上确认'}}</text>
+      <text class="countdown">{{countdown}}s</text>
+      <button wx:if="{{qr.mockMode}}" class="ghost-btn" bindtap="mockConfirm">模拟手机确认</button>
+      <button class="ghost-btn" bindtap="startQr">刷新二维码</button>
+    </view>
+  </view>
+
+  <!-- 会话导入 -->
+  <view wx:elif="{{mode === 'session'}}" class="panel">
+    <input class="field" placeholder="粘贴雨课堂 sessionid" value="{{sessionId}}" bindinput="onSidInput" />
+    <input class="field" placeholder="学号（可选）" value="{{userId}}" bindinput="onUidInput" />
+    <button class="primary-btn main-btn" bindtap="doImport" loading="{{loading}}">导入并登录</button>
+    <text class="hint">在已登录雨课堂的浏览器开发者工具中复制 Cookie 里的 sessionid</text>
+  </view>
+
+  <view wx:if="{{error}}" class="error-box">{{error}}</view>
+
+  <!-- 后端地址设置 -->
+  <view class="settings-card">
+    <view class="settings-head" bindtap="toggleSettings">
+      <text class="settings-title">⚙ 后端地址设置</text>
+      <text class="settings-toggle">{{showSettings ? '收起' : '展开'}}</text>
+    </view>
+    <view wx:if="{{showSettings}}" class="settings-body">
+      <text class="hint">当前：{{apiBase}}</text>
+      <input class="field" placeholder="粘贴内网穿透 HTTPS 地址" value="{{apiBaseInput}}" bindinput="onApiBaseInput" />
+      <button class="ghost-btn" bindtap="saveApiBase">保存地址</button>
+      <text class="hint">用 cpolar/ngrok 把本机 8080 映射为 HTTPS 地址，粘贴到这里（末尾 /api/v1 可省略）</text>
+    </view>
+  </view>
+
+  <text class="privacy">凭据仅保存在本机，不上传开发者服务器</text>
+</view>

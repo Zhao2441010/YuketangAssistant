@@ -1,0 +1,37 @@
+.page { min-height: 100vh; padding: 20rpx 20rpx 40rpx; }
+.quiz-panel { background: #fff; border-radius: 24rpx; overflow: hidden; margin-bottom: 20rpx; }
+.quiz-header { display: flex; align-items: center; justify-content: space-between; padding: 24rpx; background: #FFF7ED; }
+.quiz-title-wrap { display: flex; align-items: center; gap: 16rpx; }
+.quiz-icon { width: 56rpx; height: 56rpx; border-radius: 16rpx; background: #FFE4C4; color: #FF9500; font-weight: 700; text-align: center; line-height: 56rpx; }
+.quiz-title { display: block; font-size: 28rpx; font-weight: 700; }
+.quiz-sub { display: block; font-size: 20rpx; color: #FF9500; margin-top: 4rpx; }
+.fold { font-size: 22rpx; color: #FF9500; }
+.quiz-list { padding: 16rpx; max-height: 600rpx; overflow-y: auto; }
+.quiz-item { border: 2rpx solid #EEE; border-radius: 16rpx; padding: 20rpx; margin-bottom: 12rpx; }
+.quiz-item.active { border-color: #FF9500; background: #FFF9F2; }
+.quiz-item-head { display: flex; align-items: center; gap: 12rpx; margin-bottom: 10rpx; }
+.q-badge { background: #FFE4C4; color: #FF9500; font-size: 20rpx; padding: 4rpx 12rpx; border-radius: 16rpx; }
+.q-meta { font-size: 20rpx; color: #8E8E93; }
+.q-body { display: block; font-size: 26rpx; line-height: 1.5; }
+.q-answer { display: block; font-size: 22rpx; color: #34C759; margin-top: 10rpx; }
+.pres-tabs { white-space: nowrap; margin-bottom: 16rpx; }
+.pres-tab { display: inline-block; padding: 12rpx 24rpx; background: #fff; border-radius: 16rpx; margin-right: 12rpx; font-size: 24rpx; color: #3A3A3C; }
+.pres-tab.active { background: #007AFF; color: #fff; }
+.viewer { display: flex; background: #fff; border-radius: 24rpx; overflow: hidden; height: 75vh; }
+.thumbs { width: 150rpx; background: #FAFAFA; border-right: 2rpx solid #EEE; padding: 8rpx; }
+.thumb { position: relative; margin-bottom: 8rpx; border: 4rpx solid transparent; border-radius: 10rpx; overflow: hidden; }
+.thumb.active { border-color: #007AFF; }
+.thumb-img { width: 100%; height: 90rpx; display: block; }
+.thumb-empty { width: 100%; height: 90rpx; background: #EEE; text-align: center; line-height: 90rpx; color: #C7C7CC; }
+.thumb-page { display: block; text-align: center; font-size: 18rpx; color: #666; background: rgba(0,0,0,0.5); color: #fff; }
+.thumb-dot { position: absolute; top: 4rpx; right: 4rpx; width: 14rpx; height: 14rpx; border-radius: 50%; background: #FF9500; }
+.main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.slide-swiper { flex: 1; min-height: 0; }
+.slide-box { width: 100%; height: 100%; background: #F5F5F7; display: flex; align-items: center; justify-content: center; }
+.slide-img { width: 100%; height: 100%; }
+.slide-empty { color: #AEAEB2; font-size: 24rpx; }
+.pager { display: flex; align-items: center; justify-content: space-between; padding: 16rpx; border-top: 2rpx solid #EEE; gap: 8rpx; }
+.pager-btn { font-size: 22rpx; padding: 8rpx 16rpx; background: #F2F2F7; color: #007AFF; margin: 0; }
+.page-input-wrap { display: flex; align-items: center; gap: 8rpx; font-size: 20rpx; color: #8E8E93; }
+.page-input { width: 72rpx; height: 56rpx; border: 2rpx solid #DDD; border-radius: 10rpx; text-align: center; font-size: 24rpx; }
+.error-box { background: #FFF1F0; color: #CF4C4C; border-radius: 16rpx; padding: 20rpx; font-size: 24rpx; }

@@ -1,0 +1,17 @@
+<view class="page">
+  <view class="hint-line">选择课程查看课时与课件</view>
+  <view wx:if="{{loading}}" class="empty-tip">正在加载课程…</view>
+  <view wx:if="{{error}}" class="error-box">{{error}}</view>
+
+  <view wx:if="{{!loading && courses.length === 0 && !error}}" class="empty-tip">暂无课程</view>
+
+  <view class="course-item" wx:for="{{courses}}" wx:key="courseId" data-id="{{item.courseId}}" data-name="{{item.name}}" bindtap="goActivities">
+    <view class="course-icon">书</view>
+    <view class="course-body">
+      <text class="course-name ellipsis">{{item.name}}</text>
+      <text class="course-meta ellipsis">{{item.teacher}} · {{item.timeRange}}</text>
+    </view>
+    <text wx:if="{{item.status === 1}}" class="badge">上课中</text>
+    <text class="arrow">›</text>
+  </view>
+</view>

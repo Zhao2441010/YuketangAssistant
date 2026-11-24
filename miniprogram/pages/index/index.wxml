@@ -1,0 +1,44 @@
+<view class="page">
+  <view class="header">
+    <view class="header-left">
+      <text class="greeting">当前上课中</text>
+      <text class="subtitle">工小湖 · 雨课堂辅助</text>
+    </view>
+    <text class="uid ellipsis" wx:if="{{userId}}">{{userId}}</text>
+  </view>
+
+  <view class="entry-card" bindtap="goCourses">
+    <view class="entry-icon">课</view>
+    <view class="entry-body">
+      <text class="entry-title">课程中心</text>
+      <text class="entry-desc">全部课程 · 课时课件 · 教师题目</text>
+    </view>
+    <text class="arrow">›</text>
+  </view>
+
+  <view class="status-line">
+    <view class="dot"></view>
+    <text>实时检测开课状态 · 共 {{liveCourses.length}} 门进行中</text>
+  </view>
+
+  <view wx:if="{{error}}" class="error-box">{{error}}</view>
+  <view wx:if="{{loading}}" class="empty-tip">正在加载课程…</view>
+
+  <block wx:elif="{{liveCourses.length === 0}}">
+    <view class="empty-tip">当前没有正在上课的课程</view>
+  </block>
+
+  <block wx:else>
+    <view class="course-card" wx:for="{{liveCourses}}" wx:key="courseId">
+      <view class="course-head">
+        <text class="course-name ellipsis">{{item.name}}</text>
+        <text class="badge">上课中</text>
+      </view>
+      <text class="course-teacher">{{item.teacher}} · {{item.room}}</text>
+      <view class="course-actions">
+        <button class="primary-btn action" data-cid="{{item.courseId}}" bindtap="enterCourse">进入补答</button>
+        <button class="ghost-btn action" data-cid="{{item.courseId}}" bindtap="openClassroom">官方课堂 ↗</button>
+      </view>
+    </view>
+  </block>
+</view>

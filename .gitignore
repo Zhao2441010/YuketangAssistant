@@ -8,6 +8,7 @@ dist/
 build/
 coverage/
 *.tsbuildinfo
+.chrome-debug-profile/
 
 # ============ 环境变量与凭据（敏感） ============
 .env

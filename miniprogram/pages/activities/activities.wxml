@@ -1,0 +1,18 @@
+<view class="page">
+  <view class="hint-line">{{courseName}} · 选择课时查看课件与题目</view>
+  <view wx:if="{{loading}}" class="empty-tip">正在加载课时…</view>
+  <view wx:if="{{error}}" class="error-box">{{error}}</view>
+
+  <view wx:if="{{!loading && activities.length === 0 && !error}}" class="empty-tip">该课程暂无课时记录</view>
+
+  <view class="activity-item" wx:for="{{activities}}" wx:key="activityId"
+        data-id="{{item.activityId}}" data-cw="{{item.coursewareId}}" data-title="{{item.title}}" bindtap="goSlides">
+    <view class="type-icon {{item.type === 4 || item.type === 16 ? 'exam' : ''}}">{{item.typeName}}</view>
+    <view class="activity-body">
+      <text class="activity-title ellipsis">{{item.title}}</text>
+      <text class="activity-meta">{{item.typeName}} · {{item.timeText}}</text>
+    </view>
+    <text wx:if="{{item.finished}}" class="done">✓</text>
+    <text class="arrow">›</text>
+  </view>
+</view>

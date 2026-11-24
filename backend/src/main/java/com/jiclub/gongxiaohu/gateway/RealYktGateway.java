@@ -186,25 +186,11 @@ public class RealYktGateway implements YktGateway {
 
     @Override
     public String exchangeLessonCredential(String sessionKey, String lessonId) {
-        String path = props.endpoint("join-lesson");
-        // 只探测课堂有效性并获取上游凭据；签名 URL 由 JoinLessonService 生成
-        JsonNode root = client.get()
-                .uri(uriBuilder -> uriBuilder.path(path)
-                        .queryParam("lesson_id", lessonId)
-                        .queryParam("preview", 1)
-                        .build())
-                .headers(h -> auth(h, sessionKey))
-                .retrieve()
-                .body(JsonNode.class);
-        String credential = root == null ? null : root.path("data").path("credential").asText(null);
-        if (credential == null && root != null) {
-            credential = root.path("session_key").asText(null);
-        }
-        if (credential == null) {
-            log.warn("上游未返回凭据字段，使用 session_key 派生占位凭据（需按抓包结果修正）");
-            return "cred-" + Integer.toHexString((sessionKey + lessonId).hashCode());
-        }
-        return credential;
+        // 博客第 1 节：正规在读学生学号已在班级名单，老师点开始上课后 status=1，
+        // 直接用本地持久化的 session_key 即课堂凭据——不需要向服务端"换取"额外凭据。
+        // 之前调 join_lesson?preview=1 探测凭据会失败（该端点返回 HTML 非 JSON，且本就无需调用）。
+        return sessionKey.startsWith("sessionid=")
+                ? sessionKey.substring("sessionid=".length()) : sessionKey;
     }
 
     @Override

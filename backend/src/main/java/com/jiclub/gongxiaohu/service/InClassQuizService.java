@@ -30,13 +30,16 @@ public class InClassQuizService {
     private static final Logger log = LoggerFactory.getLogger(InClassQuizService.class);
 
     private final ObjectProvider<YktInClassQuizApi> api; // real 模式才有
+    private final ObjectProvider<com.jiclub.gongxiaohu.gateway.YktContentApi> contentApi;
     private final com.jiclub.gongxiaohu.gateway.YktGateway gateway;
     private final Map<String, String> jwtCache = new ConcurrentHashMap<>();      // key=sessionKey|lessonId
     private final Map<String, Integer> submitCount = new ConcurrentHashMap<>();  // 幂等计数
 
     public InClassQuizService(ObjectProvider<YktInClassQuizApi> api,
+                              ObjectProvider<com.jiclub.gongxiaohu.gateway.YktContentApi> contentApi,
                               com.jiclub.gongxiaohu.gateway.YktGateway gateway) {
         this.api = api;
+        this.contentApi = contentApi;
         this.gateway = gateway;
     }
 
@@ -67,28 +70,80 @@ public class InClassQuizService {
                 .orElseThrow(() -> BizException.conflict("该课程当前没有进行中的课堂，无法获取随堂题"));
     }
 
-    /** 拉取随堂题并转为 Quiz。 */
+    /** 拉取随堂题并转为 Quiz。动态码签到失败时降级到课件题路径（无需 jwt）。 */
     public List<Quiz> listQuizzes(String sessionKey, String lessonId, String presentationId) {
         YktInClassQuizApi real = api.getIfAvailable();
         if (real == null) return mockQuizzes(lessonId);
-        String jwt = ensureJwt(sessionKey, lessonId);
-        List<YktInClassQuizApi.RawProblem> raw = real.fetchProblems(sessionKey, jwt, lessonId, presentationId);
+        String jwt = null;
+        try {
+            jwt = ensureJwt(sessionKey, lessonId);
+        } catch (BizException e) {
+            // 老师开启动态二维码签到时，服务端拒绝程序化签到（DYNAMIC_QR_CHECK_IN_REFUSED）。
+            // 不阻断看题：降级到课件题路径（lesson-summary，无需 jwt）。
+            log.info("签到不可用，降级到课件题路径 lessonId={}: {}", lessonId, e.getMessage());
+        }
         List<Quiz> quizzes = new ArrayList<>();
-        for (YktInClassQuizApi.RawProblem p : raw) {
-            quizzes.add(new Quiz(
-                    p.problemId(),
-                    lessonId,
-                    typeName(p.problemType()),
-                    p.page(),
-                    p.body(),
-                    p.answered() ? QuizOpenState.SUBMITTED : QuizOpenState.PUBLISHED,
-                    "",
-                    questionType(p.problemType()),
-                    p.options(),
-                    List.of()
-            ));
+        if (jwt != null && !jwt.isBlank()) {
+            List<YktInClassQuizApi.RawProblem> raw = real.fetchProblems(sessionKey, jwt, lessonId, presentationId);
+            for (YktInClassQuizApi.RawProblem p : raw) {
+                quizzes.add(new Quiz(
+                        p.problemId(),
+                        lessonId,
+                        typeName(p.problemType()),
+                        p.page(),
+                        p.body(),
+                        p.answered() ? QuizOpenState.SUBMITTED : QuizOpenState.PUBLISHED,
+                        "", questionType(p.problemType()), p.options(), List.of()
+                ));
+            }
+        }
+        if (quizzes.isEmpty()) {
+            // 降级：走课件题（与课程中心同一路径，真实验证可用）
+            quizzes.addAll(fetchFromContent(sessionKey, lessonId));
         }
         return quizzes;
+    }
+
+    /** 从课件页 problem 字段提取题目（无需签到 jwt，动态码课堂也能看题）。 */
+    private List<Quiz> fetchFromContent(String sessionKey, String lessonId) {
+        List<Quiz> out = new ArrayList<>();
+        var ca = contentApi.getIfAvailable();
+        if (ca == null) return out;
+        try {
+            // live 接口返回的 lessonId 本身就是 courseware_id（长数字），直接可用
+            for (var pres : ca.fetchPresentations(sessionKey, lessonId)) {
+                for (var slide : pres.slides()) {
+                    if (slide.problem() == null || slide.problem().isBlank()) continue;
+                    JsonNode outer = new ObjectMapper().readTree(slide.problem());
+                    JsonNode p = outer.has("content") && outer.path("content").isObject()
+                            ? outer.path("content") : outer;
+                    String pid = text(p, "problemId", "problem_id", "id");
+                    if (pid.isBlank()) pid = text(outer, "problemId", "problem_id");
+                    int type = p.path("problemType").asInt(1);
+                    String body = text(p, "body", "title", "stem").replaceAll("<[^>]+>", "").trim();
+                    List<String> options = new ArrayList<>();
+                    JsonNode opts = p.path("options");
+                    if (opts.isArray()) opts.forEach(o -> {
+                        if (o.isTextual()) options.add(o.asText());
+                        else options.add(text(o, "key", "label") + ". " + text(o, "value", "text"));
+                    });
+                    out.add(new Quiz(pid, lessonId, typeName(type), slide.page(), body,
+                            QuizOpenState.PUBLISHED, "", questionType(type), options, List.of()));
+                }
+            }
+            log.info("课件题降级拉取 lessonId={} 题数={}", lessonId, out.size());
+        } catch (Exception e) {
+            log.warn("课件题降级拉取失败 lessonId={}: {}", lessonId, e.getMessage());
+        }
+        return out;
+    }
+
+    private static String text(JsonNode node, String... keys) {
+        for (String k : keys) {
+            JsonNode v = node.get(k);
+            if (v != null && !v.isNull() && !v.asText().isBlank()) return v.asText();
+        }
+        return "";
     }
 
     /** 提交答案（超时补答）。重复提交幂等覆盖，计数自增。 */
@@ -99,7 +154,12 @@ public class InClassQuizService {
             return new SubmitResult(problemId, true, "演示提交成功",
                     bump(problemId, sessionKey), Instant.now().toEpochMilli(), false);
         }
-        String jwt = ensureJwt(sessionKey, lessonId);
+        String jwt;
+        try {
+            jwt = ensureJwt(sessionKey, lessonId);
+        } catch (BizException e) {
+            throw BizException.conflict("老师开启了动态二维码签到，需先在雨课堂App/网页完成当场扫码签到后才能提交答案");
+        }
         boolean ok = real.submitAnswer(sessionKey, jwt, problemId, problemType, answer);
         if (!ok) {
             throw BizException.conflict("上游提交失败（老师可能已收题），请确认后重试");
