@@ -3,8 +3,8 @@
   <view wx:if="{{error}}" class="error-box">{{error}}</view>
 
   <block wx:if="{{!loading && presentations.length > 0}}">
-    <!-- 测验区：题目置顶 -->
-    <view wx:if="{{quizItems.length > 0}}" class="quiz-panel">
+    <!-- 测验区：题目置顶（全屏时隐藏） -->
+    <view wx:if="{{!fullscreen && quizItems.length > 0}}" class="quiz-panel">
       <view class="quiz-header" bindtap="toggleQuiz">
         <view class="quiz-title-wrap">
           <text class="quiz-icon">题</text>
@@ -20,50 +20,71 @@
               data-pi="{{item.presIdx}}" data-si="{{item.slideIdx}}" bindtap="jumpTo">
           <view class="quiz-item-head">
             <text class="q-badge">题{{index + 1}}</text>
+            <text class="q-type-tag">{{item.typeName}}</text>
             <text class="q-meta">{{item.presTitle}} · P{{item.page}}</text>
+            <text wx:if="{{item.answer}}" class="q-answer-badge">参考答案：{{item.answer}}</text>
           </view>
-          <text class="q-body">{{item.body || '（题目见课件图片）'}}</text>
-          <text wx:if="{{item.answer}}" class="q-answer">参考答案：{{item.answer}}</text>
+          <!-- 用 rich-text 完整渲染题目 HTML（公式/图片/格式不丢失），无 HTML 时回退纯文本 -->
+          <rich-text wx:if="{{item.bodyHtml}}" class="q-body-rich" nodes="{{item.bodyHtml}}"></rich-text>
+          <text wx:else class="q-body">{{item.body || '（题目内容见课件图片）'}}</text>
+          <!-- 选项列表：正确答案绿色高亮（与 Web 版一致） -->
+          <view wx:if="{{item.optionList.length > 0}}" class="q-options">
+            <view class="q-option {{opt.isAnswer ? 'correct' : ''}}"
+                  wx:for="{{item.optionList}}" wx:for-item="opt" wx:key="key">
+              <text class="opt-key">{{opt.key}}</text>
+              <text class="opt-val">{{opt.value}}</text>
+              <text wx:if="{{opt.isAnswer}}" class="opt-check">✓</text>
+            </view>
+          </view>
         </view>
       </view>
     </view>
 
-    <!-- 课件切换 -->
-    <scroll-view class="pres-tabs" scroll-x>
-      <view class="pres-tab {{index === presIndex ? 'active' : ''}}" wx:for="{{presentations}}" wx:key="id"
-            data-index="{{index}}" bindtap="switchPres">{{item.title}}（{{item.slidesCount}}页）</view>
-    </scroll-view>
-
-    <!-- 课件主体：左侧缩略图 + 右侧大图 -->
-    <view class="viewer">
-      <scroll-view class="thumbs" scroll-y>
-        <view class="thumb {{index === slideIndex ? 'active' : ''}}" wx:for="{{currentSlides}}" wx:key="id"
-              data-index="{{index}}" bindtap="goSlide">
-          <image wx:if="{{item.cover}}" class="thumb-img" src="{{item.cover}}" mode="aspectFill" lazy-load></image>
-          <view wx:else class="thumb-empty">—</view>
-          <text class="thumb-page">{{item.page}}</text>
-          <view wx:if="{{item.problem}}" class="thumb-dot"></view>
+    <!-- 课件主体：PPT 铺满手机宽度，缩略图预览与切换栏放到下方 -->
+    <view class="viewer {{fullscreen ? 'fullscreen' : ''}} {{landscape && !fullscreen ? 'landscape' : ''}}">
+      <!-- PPT 舞台区 -->
+      <view class="stage {{landscape && !fullscreen ? 'landscape' : ''}}">
+        <!-- 控制按钮组：全屏/退出、横竖屏、缩放（仅全屏时显示横竖屏与缩放） -->
+        <view class="ctrl-bar">
+          <view class="fs-btn" catchtap="toggleFullscreen">
+            <text class="fs-icon">{{fullscreen ? '×' : '⛶'}}</text>
+            <text class="fs-label">{{fullscreen ? '退出' : '全屏'}}</text>
+          </view>
+          <block wx:if="{{fullscreen}}">
+            <view class="fs-btn" catchtap="toggleOrientation">
+              <text class="fs-icon">{{landscape ? '▯' : '▭'}}</text>
+              <text class="fs-label">{{landscape ? '竖屏' : '横屏'}}</text>
+            </view>
+          </block>
         </view>
-      </scroll-view>
 
-      <view class="main-area">
         <swiper class="slide-swiper" current="{{slideIndex}}" bindchange="onSwiperChange" duration="200">
           <swiper-item wx:for="{{currentSlides}}" wx:key="id">
-            <view class="slide-box">
-              <image wx:if="{{item.cover}}" class="slide-img" src="{{item.cover}}" mode="aspectFit"></image>
+            <view class="slide-box" bindtap="onSlideTap" bindtouchstart="onTouchStart" bindtouchmove="onTouchMove" bindtouchend="onTouchEnd">
+              <!-- 双指缩放用 CSS transform；单指滑动交给 swiper 翻页 -->
+              <image wx:if="{{item.cover}}" class="slide-img" src="{{item.cover}}" mode="aspectFit"
+                     style="transform: translate({{offsetX}}px, {{offsetY}}px) scale({{zoom}});"></image>
               <view wx:else class="slide-empty">该页暂无图片</view>
             </view>
           </swiper-item>
         </swiper>
-        <view class="pager">
-          <button class="pager-btn" data-delta="-1" bindtap="prevSlide" disabled="{{slideIndex === 0}}">‹ 上一页</button>
-          <view class="page-input-wrap">
-            <text>第</text>
-            <input class="page-input" type="number" value="{{pageInput}}" bindinput="onPageInput" bindconfirm="goToPage" />
-            <text>/ {{currentSlides.length}} 页</text>
+      </view>
+
+      <!-- 下方：缩略图预览 + 课件切换栏（全屏时隐藏） -->
+      <view wx:if="{{!fullscreen}}" class="bottom-bar">
+        <scroll-view class="pres-tabs" scroll-x>
+          <view class="pres-tab {{index === presIndex ? 'active' : ''}}" wx:for="{{presentations}}" wx:key="id"
+                data-index="{{index}}" bindtap="switchPres">{{item.title}}（{{item.slidesCount}}页）</view>
+        </scroll-view>
+        <scroll-view class="thumbs" scroll-x scroll-left="{{thumbScrollLeft}}">
+          <view class="thumb {{index === slideIndex ? 'active' : ''}}" wx:for="{{currentSlides}}" wx:key="id"
+                data-index="{{index}}" bindtap="goSlide">
+            <image wx:if="{{item.cover}}" class="thumb-img" src="{{item.cover}}" mode="aspectFill" lazy-load></image>
+            <view wx:else class="thumb-empty">—</view>
+            <text class="thumb-page">{{item.page}}</text>
+            <view wx:if="{{item.problem}}" class="thumb-dot"></view>
           </view>
-          <button class="pager-btn" data-delta="1" bindtap="nextSlide" disabled="{{slideIndex >= currentSlides.length - 1}}">下一页 ›</button>
-        </view>
+        </scroll-view>
       </view>
     </view>
   </block>

@@ -2,7 +2,12 @@
 .header { display: flex; align-items: center; justify-content: space-between; padding: 12rpx 8rpx 24rpx; }
 .greeting { display: block; font-size: 36rpx; font-weight: 700; }
 .subtitle { display: block; font-size: 22rpx; color: #8E8E93; margin-top: 6rpx; }
-.uid { font-size: 22rpx; color: #8E8E93; max-width: 200rpx; }
+.header-right { display: flex; align-items: center; gap: 14rpx; }
+.uid { font-size: 22rpx; color: #8E8E93; max-width: 160rpx; }
+.logout-btn {
+  font-size: 22rpx; color: #FF3B30; border: 2rpx solid #FF3B30;
+  border-radius: 20rpx; padding: 6rpx 16rpx; flex-shrink: 0;
+}
 .entry-card {
   display: flex; align-items: center; gap: 20rpx;
   background: linear-gradient(135deg, #007AFF, #5AC8FA);

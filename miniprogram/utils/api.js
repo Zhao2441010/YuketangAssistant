@@ -63,6 +63,7 @@ function importSession(sessionId, userId) {
   return request('/auth/import-session', { method: 'POST', data: { sessionId, userId } });
 }
 function checkSession() { return request('/auth/session'); }
+function logout() { return request('/auth/logout', { method: 'POST' }).catch(() => null); }
 
 // ============ 业务 ============
 function fetchCourses() { return request('/courses'); }
@@ -82,6 +83,6 @@ function fetchSlides(lessonId) {
 }
 
 module.exports = {
-  request, fetchQr, pollLogin, mockConfirm, passwordLogin, importSession, checkSession,
+  request, fetchQr, pollLogin, mockConfirm, passwordLogin, importSession, checkSession, logout,
   fetchCourses, fetchInClassQuizzes, submitAnswer, joinLesson, fetchActivities, fetchSlides
 };

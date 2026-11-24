@@ -9,29 +9,116 @@
 .quiz-list { padding: 16rpx; max-height: 600rpx; overflow-y: auto; }
 .quiz-item { border: 2rpx solid #EEE; border-radius: 16rpx; padding: 20rpx; margin-bottom: 12rpx; }
 .quiz-item.active { border-color: #FF9500; background: #FFF9F2; }
-.quiz-item-head { display: flex; align-items: center; gap: 12rpx; margin-bottom: 10rpx; }
-.q-badge { background: #FFE4C4; color: #FF9500; font-size: 20rpx; padding: 4rpx 12rpx; border-radius: 16rpx; }
-.q-meta { font-size: 20rpx; color: #8E8E93; }
+.quiz-item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10rpx; margin-bottom: 10rpx; }
+.q-badge { background: #FFE4C4; color: #FF9500; font-size: 20rpx; padding: 4rpx 12rpx; border-radius: 16rpx; flex-shrink: 0; }
+.q-type-tag { background: #FFF0E0; color: #FF9500; font-size: 19rpx; padding: 4rpx 10rpx; border-radius: 12rpx; flex-shrink: 0; }
+.q-meta { font-size: 20rpx; color: #8E8E93; flex: 1; min-width: 0; }
+.q-answer-badge { background: #E8F8ED; color: #34C759; font-size: 19rpx; padding: 4rpx 12rpx; border-radius: 16rpx; flex-shrink: 0; }
 .q-body { display: block; font-size: 26rpx; line-height: 1.5; }
+.q-body-rich { display: block; font-size: 26rpx; line-height: 1.6; word-break: break-all; }
 .q-answer { display: block; font-size: 22rpx; color: #34C759; margin-top: 10rpx; }
-.pres-tabs { white-space: nowrap; margin-bottom: 16rpx; }
-.pres-tab { display: inline-block; padding: 12rpx 24rpx; background: #fff; border-radius: 16rpx; margin-right: 12rpx; font-size: 24rpx; color: #3A3A3C; }
-.pres-tab.active { background: #007AFF; color: #fff; }
-.viewer { display: flex; background: #fff; border-radius: 24rpx; overflow: hidden; height: 75vh; }
-.thumbs { width: 150rpx; background: #FAFAFA; border-right: 2rpx solid #EEE; padding: 8rpx; }
-.thumb { position: relative; margin-bottom: 8rpx; border: 4rpx solid transparent; border-radius: 10rpx; overflow: hidden; }
-.thumb.active { border-color: #007AFF; }
-.thumb-img { width: 100%; height: 90rpx; display: block; }
-.thumb-empty { width: 100%; height: 90rpx; background: #EEE; text-align: center; line-height: 90rpx; color: #C7C7CC; }
-.thumb-page { display: block; text-align: center; font-size: 18rpx; color: #666; background: rgba(0,0,0,0.5); color: #fff; }
-.thumb-dot { position: absolute; top: 4rpx; right: 4rpx; width: 14rpx; height: 14rpx; border-radius: 50%; background: #FF9500; }
-.main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.slide-swiper { flex: 1; min-height: 0; }
-.slide-box { width: 100%; height: 100%; background: #F5F5F7; display: flex; align-items: center; justify-content: center; }
-.slide-img { width: 100%; height: 100%; }
-.slide-empty { color: #AEAEB2; font-size: 24rpx; }
-.pager { display: flex; align-items: center; justify-content: space-between; padding: 16rpx; border-top: 2rpx solid #EEE; gap: 8rpx; }
-.pager-btn { font-size: 22rpx; padding: 8rpx 16rpx; background: #F2F2F7; color: #007AFF; margin: 0; }
-.page-input-wrap { display: flex; align-items: center; gap: 8rpx; font-size: 20rpx; color: #8E8E93; }
-.page-input { width: 72rpx; height: 56rpx; border: 2rpx solid #DDD; border-radius: 10rpx; text-align: center; font-size: 24rpx; }
+/* 选项列表：正确答案绿色高亮 */
+.q-options { display: flex; flex-direction: column; gap: 8rpx; margin-top: 14rpx; }
+.q-option { display: flex; align-items: center; gap: 14rpx; padding: 10rpx 14rpx; border-radius: 12rpx; background: #FAFAFA; }
+.q-option.correct { background: #E8F8ED; }
+.opt-key {
+  width: 40rpx; height: 40rpx; border-radius: 10rpx; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22rpx; font-weight: 600; color: #FF9500;
+  background: #fff; border: 2rpx solid #FFD8A8;
+}
+.q-option.correct .opt-key { background: #34C759; color: #fff; border-color: #34C759; }
+.opt-val { font-size: 25rpx; color: #3A3A3C; flex: 1; line-height: 1.4; }
+.q-option.correct .opt-val { color: #1A7F37; }
+.opt-check { color: #34C759; font-size: 26rpx; flex-shrink: 0; }
 .error-box { background: #FFF1F0; color: #CF4C4C; border-radius: 16rpx; padding: 20rpx; font-size: 24rpx; }
+
+/* ===== 课件主体：纵向布局（PPT 在上，预览/切换在下） ===== */
+.viewer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 24rpx;
+  overflow: hidden;
+}
+.stage {
+  position: relative;
+  width: 100%;
+  /* PPT 按手机宽度适配：高度约 56.25vw = 16:9，最大 65vh 留白给下方控件 */
+  height: 60vh;
+  background: #F5F5F7;
+}
+.slide-swiper { width: 100%; height: 100%; }
+.slide-box {
+  width: 100%; height: 100%;
+  background: #F5F5F7;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.slide-img {
+  /* 宽度铺满手机、高度自适应，aspectFit 保证不变形 */
+  width: 100%;
+  height: 100%;
+  transform-origin: center center;
+}
+.slide-empty { color: #AEAEB2; font-size: 24rpx; }
+
+/* ===== 下方：缩略图预览 + 课件切换栏 ===== */
+.bottom-bar { background: #fff; border-top: 2rpx solid #EEE; }
+.pres-tabs { white-space: nowrap; padding: 12rpx 16rpx 4rpx; }
+.pres-tab {
+  display: inline-block; padding: 10rpx 20rpx; background: #F2F2F7;
+  border-radius: 14rpx; margin-right: 10rpx; font-size: 22rpx; color: #3A3A3C;
+}
+.pres-tab.active { background: #007AFF; color: #fff; }
+.thumbs { white-space: nowrap; padding: 8rpx 16rpx 16rpx; }
+.thumb {
+  position: relative; display: inline-block;
+  width: 130rpx; height: 96rpx; margin-right: 10rpx;
+  border: 3rpx solid transparent; border-radius: 10rpx; overflow: hidden;
+  vertical-align: top;
+}
+.thumb.active { border-color: #007AFF; }
+.thumb-img { width: 100%; height: 80rpx; display: block; }
+.thumb-empty { width: 100%; height: 80rpx; background: #EEE; text-align: center; line-height: 80rpx; color: #C7C7CC; font-size: 20rpx; }
+.thumb-page { display: block; text-align: center; font-size: 16rpx; color: #fff; background: rgba(0,0,0,0.5); height: 16rpx; line-height: 16rpx; }
+.thumb-dot { position: absolute; top: 3rpx; right: 3rpx; width: 12rpx; height: 12rpx; border-radius: 50%; background: #FF9500; }
+
+/* ===== 全屏模式 ===== */
+.viewer.fullscreen {
+  position: fixed;
+  left: 0; top: 0; right: 0; bottom: 0;
+  width: 100vw; height: 100vh;
+  z-index: 1000;
+  background: #000;
+  border-radius: 0;
+}
+.viewer.fullscreen .stage { height: 100%; background: #000; }
+.viewer.fullscreen .slide-box { background: #000; }
+.viewer.fullscreen .slide-img { width: 100%; height: 100%; }
+/* 控制按钮栏：右上角，用 px 固定尺寸——横屏时 rpx 基准变化会导致按钮变形，故改用 px */
+.ctrl-bar {
+  position: absolute; top: 30px; right: 10px; z-index: 20;
+  display: flex; flex-direction: row; align-items: center; gap: 6px;
+}
+.fs-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  width: 38px; height: 38px; border-radius: 50%;
+  background: rgba(0,0,0,0.5); color: #fff;
+  box-sizing: border-box; flex-shrink: 0;
+}
+.fs-icon { font-size: 17px; line-height: 1; }
+.fs-label { font-size: 9px; margin-top: 1px; }
+.viewer:not(.fullscreen) .ctrl-bar { top: 8px; right: 8px; }
+.viewer:not(.fullscreen) .fs-btn { width: 34px; height: 34px; background: rgba(0,122,255,0.9); }
+.viewer:not(.fullscreen) .fs-icon { font-size: 15px; }
+.viewer:not(.fullscreen) .fs-label { font-size: 8px; }
+/* 横屏（非全屏）：PPT 区域贴合屏幕，去掉蓝色按钮底色 */
+.viewer.landscape { border-radius: 0; }
+.viewer.landscape .stage { height: 100vh; }
+.viewer.landscape .bottom-bar { display: none; }
+.viewer.landscape .fs-btn {
+  background: rgba(0,0,0,0.5);
+  color: #fff;
+}

@@ -27,15 +27,31 @@ Page({
     }
     this.setData({ userId: app.globalData.userId });
     this.loadCourses();
+    this.startPolling();
   },
 
-  async loadCourses() {
-    this.setData({ loading: true, error: '' });
+  onHide() { this.stopPolling(); },
+  onUnload() { this.stopPolling(); },
+
+  /** 每分钟自动询问一次上课状态（避免持续请求） */
+  startPolling() {
+    this.stopPolling();
+    this.pollTimer = setInterval(() => {
+      if (getApp().globalData.token) this.loadCourses(true);
+    }, 60 * 1000);
+  },
+  stopPolling() {
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+  },
+
+  async loadCourses(silent) {
+    if (!silent) this.setData({ loading: true, error: '' });
     try {
       const data = await api.fetchCourses();
       this.setData({ liveCourses: data.liveCourses || [], loading: false });
     } catch (e) {
-      this.setData({ loading: false, error: e.message });
+      // 静默轮询失败不打断用户，显示轻量错误
+      this.setData({ loading: false, error: silent ? '自动刷新失败，下拉可重试' : e.message });
     }
   },
 
@@ -64,6 +80,24 @@ Page({
       wx.hideLoading();
       wx.showToast({ title: err.message, icon: 'none' });
     }
+  },
+
+  /** 退出登录：清除后端会话 + 本地凭据，回登录页 */
+  async doLogout() {
+    const confirm = await new Promise(resolve => {
+      wx.showModal({
+        title: '退出登录',
+        content: '确定要退出当前账号吗？',
+        success: (r) => resolve(r.confirm)
+      });
+    });
+    if (!confirm) return;
+    wx.showLoading({ title: '正在退出' });
+    await api.logout();
+    wx.hideLoading();
+    this.stopPolling();
+    getApp().clearSession();
+    wx.reLaunch({ url: '/pages/login/login' });
   },
 
   onPullDownRefresh() {
