@@ -104,6 +104,7 @@ public class YktWebSocketLogin {
             }
             String dataUrl = "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(image);
             flow.expiresAt = Instant.now().plusSeconds(info.expireSeconds()).toEpochMilli();
+            flow.loginId = info.loginId();
             flows.put(info.loginId(), flow);
             log.info("真实二维码已生成 loginid={} expire={}s imgBytes={}",
                     info.loginId(), info.expireSeconds(), image.length);
@@ -247,8 +248,18 @@ public class YktWebSocketLogin {
                         node.path("expire_seconds").asInt(60),
                         node.path("qrcode").asText("")
                 ));
-            } else if (node.has("subscribe_status") || "loginsuccess".equals(op)) {
-                flow.loginFuture.complete(node);
+            } else if ("loginsuccess".equals(op) || node.has("subscribe_status")) {
+                // 关键修复：只有真正带 Auth 的消息才算登录成功。
+                // subscribe_status 是订阅状态通知，可能先于 loginsuccess 到达且不含 Auth；
+                // 若它也 complete loginFuture，poll 会拿到空 Auth 并返回空，
+                // 而 future 已无法再次 complete，真正的 loginsuccess 被丢弃 → 永远登不上。
+                String auth = text(node, "Auth", "auth");
+                if (!auth.isBlank()) {
+                    log.info("收到登录成功凭据 loginid={} op={}", flow.loginId, op);
+                    flow.loginFuture.complete(node);
+                } else {
+                    log.debug("忽略不含 Auth 的状态通知 op={} keys={}", op, node.fieldNames());
+                }
             }
         } catch (Exception e) {
             log.debug("忽略无法解析的 WebSocket 消息: {}", message.substring(0, Math.min(80, message.length())));
@@ -295,6 +306,7 @@ public class YktWebSocketLogin {
         final StringBuilder buffer = new StringBuilder();
         volatile WebSocket ws;
         volatile long expiresAt;
+        volatile String loginId;
     }
 
     private record QrInfo(String ticketUrl, String loginId, int expireSeconds, String qrcode) {}

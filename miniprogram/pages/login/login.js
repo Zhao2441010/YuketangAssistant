@@ -86,11 +86,36 @@ Page({
   async mockConfirm() {
     if (!this.data.qr) return;
     try {
-      const result = await api.mockConfirm(this.data.qr.ticket);
-      this.loginSuccess(result);
+      // mock-confirm 只返回 true/false（触发确认），真正的登录凭据由后台轮询 pollLogin 拿到。
+      // 不能把它的返回值当 LoginResult 传给 loginSuccess，否则 token 为 undefined 会跳回登录页。
+      await api.mockConfirm(this.data.qr.ticket);
+      wx.showToast({ title: '已模拟确认，等待登录…', icon: 'none' });
+      // 确保轮询在运行（startQr 已启动；这里兜底一次）
+      if (!this.pollTimer) this.startPoll(this.data.qr.ticket);
     } catch (e) {
       this.setData({ error: e.message });
     }
+  },
+
+  /** 手动进入首页（自动 reLaunch 失败时的兜底入口） */
+  goHome() {
+    const app = getApp();
+    if (!app.globalData.token) {
+      const cached = wx.getStorageSync('gxH_token');
+      if (cached) {
+        app.globalData.token = cached;
+        app.globalData.sessionId = wx.getStorageSync('gxH_sid') || '';
+        app.globalData.userId = wx.getStorageSync('gxH_uid') || '';
+      }
+    }
+    if (!app.globalData.token) {
+      wx.showToast({ title: '尚未登录，请重新扫码', icon: 'none' });
+      return;
+    }
+    wx.reLaunch({
+      url: '/pages/index/index',
+      fail: (err) => wx.showToast({ title: (err && err.errMsg) || '跳转失败', icon: 'none' })
+    });
   },
 
   // ============ 会话导入 ============
@@ -110,10 +135,33 @@ Page({
   },
 
   loginSuccess(result) {
+    // 防御：只有拿到有效 token 才算登录成功，避免 undefined 跳转后被首页弹回
+    const token = result && typeof result === 'object' ? result.token : '';
+    if (!token) {
+      this.setData({ viewState: 'error', error: '登录返回异常（未拿到 token），请重试' });
+      return;
+    }
     this.stopTimers();
-    getApp().setSession(result.token, result.sessionKey || result.sessionId || '', result.userId || '');
+    getApp().setSession(token, result.sessionKey || result.sessionId || '', result.userId || '');
     this.setData({ viewState: 'success', loading: false });
     wx.showToast({ title: '登录成功', icon: 'success' });
-    setTimeout(() => wx.reLaunch({ url: '/pages/index/index' }), 800);
+    const app = getApp();
+    console.log('[login] 准备跳转 token=', app.globalData.token ? '有' : '无',
+                'uid=', app.globalData.userId);
+    // 先切到 success 态让 UI 稳定，再 reLaunch；带 fail 回调避免静默失败
+    setTimeout(() => {
+      wx.reLaunch({
+        url: '/pages/index/index',
+        success: () => console.log('[login] reLaunch 成功'),
+        fail: (err) => {
+          console.error('[login] reLaunch 失败', err);
+          wx.showModal({
+            title: '页面跳转失败',
+            content: (err && err.errMsg) || '请重新进入小程序',
+            showCancel: false
+          });
+        }
+      });
+    }, 1000);
   }
 });

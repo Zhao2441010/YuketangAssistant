@@ -40,7 +40,11 @@ function request(path, options = {}, retry = true) {
         }
         reject(new Error(body.message || ('请求失败 ' + res.statusCode)));
       },
-      fail: () => reject(new Error('无法连接后端，请检查地址与网络'))
+      fail: (err) => {
+        // 透传微信底层错误，便于真机排查（域名未校验 / 超时 / 连接拒绝等）
+        const msg = (err && err.errMsg) || '网络异常';
+        reject(new Error(msg));
+      }
     });
   });
 }

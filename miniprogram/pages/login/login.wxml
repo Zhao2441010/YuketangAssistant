@@ -18,6 +18,7 @@
     <view wx:elif="{{viewState === 'success'}}" class="center success-box">
       <text class="success-icon">✓</text>
       <text class="success-text">登录成功</text>
+      <button class="primary-btn main-btn" bindtap="goHome">进入首页</button>
     </view>
     <view wx:else class="center">
       <image class="qr-img" src="{{qr.qrDataUrl}}" mode="aspectFit" wx:if="{{qr.qrDataUrl}}"></image>

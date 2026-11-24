@@ -10,6 +10,17 @@ Page({
 
   onShow() {
     const app = getApp();
+    // globalData 为空时用本地 storage 兜底恢复（冷启动/reLaunch 时序）
+    if (!app.globalData.token) {
+      const cached = wx.getStorageSync('gxH_token');
+      if (cached) {
+        app.globalData.token = cached;
+        app.globalData.sessionId = wx.getStorageSync('gxH_sid') || '';
+        app.globalData.userId = wx.getStorageSync('gxH_uid') || '';
+      }
+    }
+    console.log('[index onShow] token=', app.globalData.token ? '有' : '无',
+                'apiBase=', app.globalData.apiBase);
     if (!app.globalData.token) {
       wx.redirectTo({ url: '/pages/login/login' });
       return;
