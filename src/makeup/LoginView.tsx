@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CheckCircle2, KeyRound, Loader2, QrCode, RefreshCw, Smartphone, Wifi } from 'lucide-react';
-import { fetchLoginQr, LoginQr, mockConfirm, passwordLogin, pollLogin } from './api';
+import { CheckCircle2, Cookie, KeyRound, Loader2, QrCode, RefreshCw, Smartphone, Wifi } from 'lucide-react';
+import { fetchLoginQr, importCookie, LoginQr, mockConfirm, passwordLogin, pollLogin } from './api';
 
 interface Props {
   onLogin: (userId: string, mock: boolean) => void;
@@ -14,12 +14,15 @@ export default function LoginView({ onLogin }: Props) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [message, setMessage] = useState('');
   const [countdown, setCountdown] = useState(45);
-  const [loginMode, setLoginMode] = useState<'qr' | 'password'>('qr');
+  const [loginMode, setLoginMode] = useState<'qr' | 'password' | 'cookie'>('qr');
   const [account, setAccount] = useState('');
   const [password, setPassword] = useState('');
   const [accountType, setAccountType] = useState<'PP' | 'E'>('PP');
   const [captcha, setCaptcha] = useState<{ ticket: string; randstr: string } | null>(null);
   const [pwdBusy, setPwdBusy] = useState(false);
+  const [cookieText, setCookieText] = useState('');
+  const [cookieUid, setCookieUid] = useState('');
+  const [cookieBusy, setCookieBusy] = useState(false);
   const pollAbort = useRef<AbortController | null>(null);
   // 轮询会话 ID：只有主动刷新二维码/卸载页面才 +1 使旧轮询失效。
   // 不依赖 AbortController.signal.aborted——Android WebView 会主动 abort 长连接，
@@ -35,6 +38,29 @@ export default function LoginView({ onLogin }: Props) {
       pollAbort.current?.abort();
     };
   }, []);
+
+  /**
+   * 方案④：导入整串 Cookie 补齐 L1 登录态。
+   * 课堂凭证换取需要 csrftoken / X-UID / university-id / uv-id，仅 sessionid 会 401。
+   * 扫码登录已能自动带出这些字段，此入口供账密登录或已有浏览器会话的用户手动补齐。
+   */
+  const handleImportCookie = async () => {
+    if (!cookieText.trim()) { setPhase('error'); setMessage('请粘贴完整 Cookie'); return; }
+    setCookieBusy(true);
+    setPhase('loading');
+    setMessage('');
+    try {
+      const result = await importCookie(cookieText.trim(), cookieUid.trim());
+      setPhase('success');
+      setMessage(`Cookie 导入成功，学号 ${result.userId}`);
+      window.setTimeout(() => { if (mounted.current) onLogin(result.userId, false); }, 800);
+    } catch (e) {
+      setPhase('error');
+      setMessage(`Cookie 导入失败：${(e as Error).message}`);
+    } finally {
+      setCookieBusy(false);
+    }
+  };
 
   /** 创建二维码并立刻发起长轮询（与官方一致：单次挂起请求）。 */
   const startLogin = async () => {
@@ -171,7 +197,7 @@ export default function LoginView({ onLogin }: Props) {
 
         {/* 登录方式切换 */}
         <div className="flex bg-[#F2F2F7] rounded-xl p-1 gap-1">
-          {([['qr', '微信扫码', QrCode], ['password', '账号密码', KeyRound]] as const).map(([key, label, Icon]) => (
+          {([['qr', '微信扫码', QrCode], ['password', '账号密码', KeyRound], ['cookie', 'Cookie', Cookie]] as const).map(([key, label, Icon]) => (
             <button
               key={key}
               onClick={() => { setLoginMode(key); setPhase('idle'); setMessage(''); }}
@@ -300,6 +326,37 @@ export default function LoginView({ onLogin }: Props) {
             登录
           </button>
         </div>
+        )}
+
+        {/* ============ Cookie 导入（方案④：补齐 L1 登录态）============ */}
+        {loginMode === 'cookie' && (
+          <div className="space-y-3">
+            <textarea
+              value={cookieText}
+              onChange={e => setCookieText(e.target.value)}
+              placeholder={'从浏览器 DevTools → Network → 复制整串 Cookie：\ncsrftoken=...; sessionid=...; university_id=...; uv_id=...'}
+              rows={4}
+              className="w-full px-3 py-2.5 rounded-xl bg-[#F2F2F7] text-xs font-mono outline-none focus:ring-2 focus:ring-[#007AFF]/30 resize-none"
+            />
+            <input
+              value={cookieUid}
+              onChange={e => setCookieUid(e.target.value)}
+              placeholder="学号 / X-UID（可选）"
+              className="w-full px-4 py-2.5 rounded-xl bg-[#F2F2F7] text-sm outline-none focus:ring-2 focus:ring-[#007AFF]/30"
+            />
+            <p className="text-[10px] text-[#AEAEB2] leading-relaxed">
+              课堂凭证换取需要 csrftoken / X-UID 等完整字段，仅 sessionid 会被官方拒绝。
+              Cookie 只存后端内存，不写日志、不回传页面。扫码登录已自动带出这些字段，通常无需此入口。
+            </p>
+            <button
+              onClick={() => void handleImportCookie()}
+              disabled={cookieBusy}
+              className="w-full py-3.5 rounded-2xl bg-[#007AFF] text-white text-sm font-bold hover:bg-[#0066CC] active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+            >
+              {cookieBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cookie className="w-4 h-4" />}
+              导入并建立会话
+            </button>
+          </div>
         )}
 
         {phase === 'error' && (

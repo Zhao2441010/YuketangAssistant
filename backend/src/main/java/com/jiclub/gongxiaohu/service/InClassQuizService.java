@@ -72,15 +72,26 @@ public class InClassQuizService {
 
     /** 拉取随堂题并转为 Quiz。动态码签到失败时降级到课件题路径（无需 jwt）。 */
     public List<Quiz> listQuizzes(String sessionKey, String lessonId, String presentationId) {
+        return listQuizzes(sessionKey, null, lessonId, presentationId);
+    }
+
+    /**
+     * 方案④：可复用已换出的 pptJwt（进班时由 LessonCredentialClient 取得）。
+     * 传入 jwt 时跳过二次 checkin——避免用不完整 L1 上下文重复签到导致 401。
+     */
+    public List<Quiz> listQuizzes(String sessionKey, String knownJwt,
+                                  String lessonId, String presentationId) {
         YktInClassQuizApi real = api.getIfAvailable();
         if (real == null) return mockQuizzes(lessonId);
-        String jwt = null;
-        try {
-            jwt = ensureJwt(sessionKey, lessonId);
-        } catch (BizException e) {
-            // 老师开启动态二维码签到时，服务端拒绝程序化签到（DYNAMIC_QR_CHECK_IN_REFUSED）。
-            // 不阻断看题：降级到课件题路径（lesson-summary，无需 jwt）。
-            log.info("签到不可用，降级到课件题路径 lessonId={}: {}", lessonId, e.getMessage());
+        String jwt = knownJwt;
+        if (jwt == null || jwt.isBlank()) {
+            try {
+                jwt = ensureJwt(sessionKey, lessonId);
+            } catch (BizException e) {
+                // 老师开启动态二维码签到时，服务端拒绝程序化签到（DYNAMIC_QR_CHECK_IN_REFUSED）。
+                // 不阻断看题：降级到课件题路径（lesson-summary，无需 jwt）。
+                log.info("签到不可用，降级到课件题路径 lessonId={}: {}", lessonId, e.getMessage());
+            }
         }
         List<Quiz> quizzes = new ArrayList<>();
         if (jwt != null && !jwt.isBlank()) {
@@ -102,6 +113,19 @@ public class InClassQuizService {
             quizzes.addAll(fetchFromContent(sessionKey, lessonId));
         }
         return quizzes;
+    }
+
+    /**
+     * 后端自渲染主路径（§7）：仅凭 L1 sessionid 走 lesson-summary 取课件题，
+     * <b>完全不调用 checkin</b>，因此不经过动态码、不依赖 pptJwt。
+     *
+     * <p>这是「不签到也能看课堂内容」的正确实现：官方 lesson-summary 系列
+     * 只需 Cookie sessionid，与签到状态无关。提交答案仍需本人扫码（见 submit）。
+     */
+    public List<Quiz> listQuizzesForSelfRender(String sessionKey, String lessonId) {
+        YktInClassQuizApi real = api.getIfAvailable();
+        if (real == null) return mockQuizzes(lessonId);  // 演示模式
+        return fetchFromContent(sessionKey, lessonId);
     }
 
     /** 从课件页 problem 字段提取题目（无需签到 jwt，动态码课堂也能看题）。 */

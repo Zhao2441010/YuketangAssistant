@@ -4,9 +4,12 @@ import {
   Layers, Loader2, LogOut, MapPin, Plus, RefreshCw, Send, User, Wifi, X
 } from 'lucide-react';
 import {
-  Course, Quiz, SubmitResult, checkSession, clearToken, fetchCourses,
-  fetchInClassQuizzes, getToken, imageUrl, joinLesson, keepAlive, logout, saveDraft, submitInClassAnswer, uploadImage
+  Course, Quiz, SubmitResult, ClassroomView, DiagnosticReport, JoinLessonResult,
+  checkSession, clearDiagnostics, clearToken, fetchClassroomRender, fetchCourses,
+  fetchDiagnostics, fetchEntryCookie, fetchInClassQuizzes, getToken, imageUrl, joinLesson,
+  keepAlive, logout, saveDraft, submitInClassAnswer, uploadImage
 } from './api';
+import { isNativeApp, openOfficialClassroomSession } from './classroomEntry';
 import LoginView from './LoginView';
 import CourseCenter from './CourseCenter';
 
@@ -250,6 +253,10 @@ export default function MakeupApp() {
   const [answers, setAnswers] = useState<Record<string, AnswerState>>({});
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 方案④：后端自渲染的课堂视图（凭证留后端，前端只拿 entryId 与渲染数据）
+  const [classroom, setClassroom] = useState<ClassroomView | null>(null);
+  const [classroomJoin, setClassroomJoin] = useState<JoinLessonResult | null>(null);
+  const [classroomLoading, setClassroomLoading] = useState(false);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -297,6 +304,8 @@ export default function MakeupApp() {
     setUserId('');
     setActiveCourse(null);
     setQuizzes([]);
+    setClassroom(null);
+    setClassroomJoin(null);
     showToast('已退出登录');
   };
 
@@ -361,15 +370,24 @@ export default function MakeupApp() {
     }
   };
 
-  /** 一键进班：按博客第 1 节用 session_key 换官方进班链接并打开课堂页。
-   *  Web 端跨域无法注入 sessionid cookie——若浏览器已在雨课堂登录则直接进班，否则提示。 */
+  /**
+   * 后端自渲染（用户选定的主方案）：仅凭 L1 登录态由后端走 lesson-summary
+   * 拉课件与题目，前端自绘。全程不调用 checkin / pptJwt，不经过动态码。
+   *
+   * 原生端仍保留「用官方页打开」按钮（Cookie 注入 + App 内 WebView），
+   * 但不再是默认路径——放在自渲染课堂页里作为可选项。
+   */
   const openOfficialClassroom = async (course: Course) => {
+    setClassroomLoading(true);
     try {
-      const result = await joinLesson(course.courseId);
-      window.open(result.joinUrl, '_blank', 'noopener,noreferrer');
-      showToast('已打开官方课堂页；若未自动进班请先在雨课堂网页登录');
+      const joined = await joinLesson(course.courseId, false);   // 不签到
+      const view = await fetchClassroomRender(joined.entryId);    // 零签到自渲染
+      setClassroomJoin(joined);
+      setClassroom(view);
     } catch (e) {
-      showToast(`打开课堂失败：${(e as Error).message}`);
+      showToast(`进入课堂失败：${(e as Error).message}`);
+    } finally {
+      setClassroomLoading(false);
     }
   };
 
@@ -413,6 +431,18 @@ export default function MakeupApp() {
   // ============ 课程中心（全部课程 → 课时 → 课件/题目）============
   if (showCourseCenter) {
     return <CourseCenter courses={allCourses} onBack={() => setShowCourseCenter(false)} />;
+  }
+
+  // ============ 方案④：后端自渲染课堂（不进官方页，无跨域 Cookie）============
+  if (classroom) {
+    return (
+      <SelfRenderedClassroom
+        view={classroom}
+        join={classroomJoin}
+        showToast={showToast}
+        onBack={() => { setClassroom(null); setClassroomJoin(null); }}
+      />
+    );
   }
 
   // ============ 视图 1：当前上课中的课程 ============
@@ -496,10 +526,11 @@ export default function MakeupApp() {
                   </button>
                   <button
                     onClick={() => void openOfficialClassroom(course)}
-                    title="用 session_key 换取官方进班链接并打开课堂"
-                    className="px-4 py-3 rounded-2xl bg-white border border-[#007AFF]/30 text-[#007AFF] text-sm font-semibold hover:bg-[#007AFF]/5 active:scale-[0.99] transition-all flex items-center justify-center gap-1.5"
+                    disabled={classroomLoading}
+                    title="后端换取课堂凭证并自渲染课件与题目（无需官方页 Cookie）"
+                    className="px-4 py-3 rounded-2xl bg-white border border-[#007AFF]/30 text-[#007AFF] text-sm font-semibold hover:bg-[#007AFF]/5 active:scale-[0.99] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
                   >
-                    官方课堂 ↗
+                    {classroomLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : '进入课堂'}
                   </button>
                 </div>
               </div>
@@ -561,6 +592,220 @@ export default function MakeupApp() {
     </div>
   );
 }
+
+/**
+ * 方案④自渲染课堂：后端持 pptJwt 拉好课件与题目，前端自绘。
+ * 全流程不进入官方课堂页、不注入 Cookie、不下发任何凭证。
+ */
+const SelfRenderedClassroom: React.FC<{
+  view: ClassroomView;
+  join: JoinLessonResult | null;
+  showToast: (msg: string) => void;
+  onBack: () => void;
+}> = ({ view, join, showToast, onBack }) => {
+  const [presIdx, setPresIdx] = React.useState(0);
+  const [slideIdx, setSlideIdx] = React.useState(0);
+  const [diagOpen, setDiagOpen] = React.useState(false);
+  const [diag, setDiag] = React.useState<DiagnosticReport | null>(null);
+  const [diagErr, setDiagErr] = React.useState('');
+  const pres = view.presentations[presIdx];
+  const slide = pres?.slides[slideIdx];
+
+  const loadDiag = async () => {
+    setDiagErr('');
+    try { setDiag(await fetchDiagnostics()); }
+    catch (e) { setDiagErr((e as Error).message); }
+  };
+  React.useEffect(() => { if (diagOpen) void loadDiag(); }, [diagOpen]);
+
+  return (
+    <div className="min-h-screen bg-[#F2F2F7] text-[#1C1C1E]">
+      <header className="bg-white/90 backdrop-blur-md border-b border-black/[0.06] sticky top-0 z-20">
+        <div className="max-w-4xl mx-auto px-5 h-14 flex items-center gap-3">
+          <button onClick={onBack} className="w-8 h-8 rounded-full bg-[#F2F2F7] flex items-center justify-center text-[#8E8E93]">
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          <div className="flex-1 min-w-0">
+            <h1 className="text-[15px] font-bold leading-tight truncate">{view.courseName || '课堂'}</h1>
+            <p className="text-[11px] text-[#8E8E93]">工小湖 · 课堂自渲染</p>
+          </div>
+          <span className={`px-2 py-1 rounded-full text-[10px] font-semibold shrink-0 ${
+            view.credentialReady ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+            {view.credentialReady ? '凭证就绪' : '降级模式'}
+          </span>
+        </div>
+      </header>
+
+      <main className="max-w-4xl mx-auto px-4 py-5 space-y-4">
+        <div className="bg-white rounded-2xl px-4 py-3 text-xs text-[#3A3A3C] flex items-start gap-2">
+          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+          <span>{view.hint}</span>
+        </div>
+
+        {/* 课件切换 + PPT 主图 + 缩略图 */}
+        {view.presentations.length > 0 && (
+          <section className="space-y-3">
+            <div className="flex gap-2 overflow-x-auto">
+              {view.presentations.map((p, i) => (
+                <button key={p.id || i} onClick={() => { setPresIdx(i); setSlideIdx(0); }}
+                  className={`shrink-0 px-3 py-1.5 rounded-xl text-xs font-medium ${
+                    i === presIdx ? 'bg-[#007AFF] text-white' : 'bg-white border border-black/[0.06]'}`}>
+                  {p.title}（{p.slidesCount}页）
+                </button>
+              ))}
+            </div>
+            {slide && (
+              <div className="bg-white rounded-3xl border border-black/[0.06] overflow-hidden">
+                <div className="bg-slate-50 flex items-center justify-center min-h-[280px]">
+                  {slide.cover
+                    ? <img src={slide.cover} alt={`第${slide.page}页`} className="w-full max-h-[60vh] object-contain" referrerPolicy="no-referrer" />
+                    : <span className="text-xs text-[#AEAEB2]">该页暂无图片</span>}
+                </div>
+                <div className="flex gap-2 overflow-x-auto p-3">
+                  {pres?.slides.map((s, i) => (
+                    <button key={s.id || i} onClick={() => setSlideIdx(i)}
+                      className={`shrink-0 w-[88px] rounded-lg overflow-hidden border-2 relative ${
+                        i === slideIdx ? 'border-[#007AFF]' : 'border-transparent'}`}>
+                      {s.cover
+                        ? <img src={s.cover} className="w-full h-[50px] object-cover" referrerPolicy="no-referrer" alt={`P${s.page}`} />
+                        : <div className="w-full h-[50px] bg-slate-100" />}
+                      <span className="absolute bottom-0 left-0 right-0 bg-black/55 text-white text-[9px] text-center">{s.page}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* 题目：后端持 pptJwt 拉取，前端自绘 */}
+        <section className="space-y-2">
+          <h2 className="text-sm font-bold px-1">课堂题目（{view.quizzes.length}）</h2>
+          {view.quizzes.length === 0
+            ? <div className="bg-white rounded-2xl p-6 text-center text-xs text-[#8E8E93]">该节课暂无已下发题目</div>
+            : view.quizzes.map(q => (
+              <div key={q.quizId} className="bg-white rounded-2xl border border-black/[0.06] p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-[10px] font-semibold">{q.type}</span>
+                  <span className="text-[10px] text-[#8E8E93]">{q.state}</span>
+                </div>
+                <p className="text-sm leading-relaxed">{q.question}</p>
+                {q.options.length > 0 && (
+                  <ul className="space-y-1">
+                    {q.options.map((o, i) => (
+                      <li key={i} className="text-xs text-[#3A3A3C] bg-[#F9F9FB] rounded-lg px-2.5 py-1.5">{o}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+        </section>
+
+        {/* 验证诊断（§6.7）：真实开课时展开即可看到 checkin 全套证据，无需抓包 */}
+        <section className="bg-white rounded-2xl border border-black/[0.06] overflow-hidden">
+          <button onClick={() => setDiagOpen(v => !v)}
+            className="w-full px-4 py-3 flex items-center justify-between text-xs font-semibold hover:bg-[#F9F9FB]">
+            <span className="flex items-center gap-2">
+              <Wifi className="w-4 h-4 text-[#007AFF]" /> 验证诊断 · checkin 证据（§6.7）
+            </span>
+            <span className="text-[#8E8E93]">{diagOpen ? '收起' : '展开'}</span>
+          </button>
+          {diagOpen && (
+            <div className="px-4 pb-4 space-y-3 border-t border-black/[0.06] pt-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-[#8E8E93]">
+                  {diag ? `共 ${diag.totalAttempts} 次尝试` : '加载中…'}
+                </span>
+                <div className="flex gap-2">
+                  <button onClick={() => void loadDiag()} className="text-[10px] text-[#007AFF]">刷新</button>
+                  <button onClick={async () => { await clearDiagnostics(); await loadDiag(); }}
+                    className="text-[10px] text-[#8E8E93]">清空</button>
+                </div>
+              </div>
+              {diagErr && <p className="text-[11px] text-red-600">{diagErr}</p>}
+              {diag && diag.totalAttempts === 0 && (
+                <p className="text-[11px] text-[#8E8E93] leading-relaxed">
+                  自渲染主方案不调用 checkin，因此没有诊断记录是正常且符合预期的。
+                  诊断面板保留用于排查可选的实时题增强链路。
+                </p>
+              )}
+              {diag && (
+                <>
+                  <div className="bg-[#F2F2F7] rounded-xl p-3 space-y-1.5">
+                    {([
+                      ['① 请求头清单', diag.checklist.checkinHeadersCaptured],
+                      ['② Set-Auth 证据', diag.checklist.setAuthCaptured],
+                      ['③ 三元组齐全', diag.checklist.tripleCaptured],
+                      ['④ socketJwt 存在', diag.checklist.websocketHintCaptured],
+                      ['⑤ get-token 归属', diag.checklist.getTokenKnown]
+                    ] as const).map(([label, ok]) => (
+                      <div key={label} className="flex items-center gap-2 text-[11px]">
+                        <span className={ok ? 'text-emerald-600' : 'text-[#AEAEB2]'}>{ok ? '✓' : '○'}</span>
+                        <span className={ok ? 'text-[#1C1C1E]' : 'text-[#8E8E93]'}>{label}</span>
+                      </div>
+                    ))}
+                    <p className="text-[10px] text-[#3A3A3C] pt-1 leading-relaxed">{diag.checklist.note}</p>
+                  </div>
+                  <p className="text-[10px] text-[#AEAEB2]">{diag.privacyNote}</p>
+                  {diag.records.length > 0 && (
+                    <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                      {[...diag.records].reverse().map((r, i) => (
+                        <div key={i} className="bg-[#FAFAFA] rounded-xl p-2.5 space-y-1">
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="font-mono">{r.time} · source={r.source}</span>
+                            <span className={r.outcome === 'SUCCESS'
+                              ? 'text-emerald-600 font-semibold' : 'text-amber-600 font-semibold'}>{r.outcome}</span>
+                          </div>
+                          <p className="text-[10px] text-[#3A3A3C] break-all">
+                            HTTP {r.httpStatus} · code {r.bizCode} · {r.bizMessage || '—'} · {r.elapsedMs}ms
+                          </p>
+                          <p className="text-[10px] text-[#3A3A3C]">
+                            Set-Auth: {r.setAuthPresent ? r.setAuthFingerprint : '无'} ·
+                            socketJwt: {r.socketJwtPresent ? '有' : '无'} ·
+                            identityId: {r.identityIdPresent ? '有' : '无'}
+                          </p>
+                          <p className="text-[10px] text-[#8E8E93] break-all">
+                            头 {Object.entries(r.requestHeaders).map(([k, v]) => `${k}=${v}`).join(' · ')}
+                          </p>
+                          {r.missingHeaders.length > 0 && (
+                            <p className="text-[10px] text-amber-700">缺失头：{r.missingHeaders.join(', ')}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* 可选项：在读学生固定入口（无 sign/ts/动态码），需官方域 Cookie */}
+        {join?.joinUrl && (
+          <>
+            {isNativeApp && (
+              <button onClick={async () => {
+                try {
+                  const ck = await fetchEntryCookie();
+                  await openOfficialClassroomSession({
+                    url: join.joinUrl, cookie: ck.cookie, domain: ck.domain
+                  });
+                } catch (e) { showToast(`打开官方课堂失败：${(e as Error).message}`); }
+              }}
+                className="w-full py-3 rounded-2xl bg-[#007AFF] text-white text-xs font-semibold">
+                用官方课堂页打开（App 内 WebView 注入 Cookie）
+              </button>
+            )}
+            <button onClick={() => window.open(join.joinUrl, '_blank', 'noopener,noreferrer')}
+              className="w-full py-3 rounded-2xl bg-white border border-[#007AFF]/30 text-[#007AFF] text-xs font-semibold">
+              在浏览器打开官方课堂页 ↗（需该浏览器已登录雨课堂）
+            </button>
+          </>
+        )}
+      </main>
+    </div>
+  );
+};
 
 const Toast: React.FC<{ message: string }> = ({ message }) => (
   <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-[#1C1C1E]/90 text-white text-xs px-4 py-2.5 rounded-full shadow-lg flex items-center gap-1.5 whitespace-nowrap backdrop-blur-md">

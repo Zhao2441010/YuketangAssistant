@@ -145,10 +145,12 @@ public class YktWebSocketLogin {
             if (auth.isBlank()) {
                 return Optional.empty();
             }
-            String sessionId = exchangeSessionId(userId, auth, info.get("UserID"));
-            log.info("真实扫码登录成功 userId={}", mask(userId));
+            com.jiclub.gongxiaohu.model.AuthModels.SessionContext ctx =
+                    exchangeSessionId(userId, auth, info.get("UserID"));
+            log.info("真实扫码登录成功 userId={} 有csrftoken={}",
+                    mask(userId), !ctx.csrftoken().isBlank());
             cleanup(loginId, flow); // 成功后释放连接
-            return Optional.of(new AuthCredential(userId, sessionId));
+            return Optional.of(new AuthCredential(userId, ctx.sessionId(), ctx));
         } catch (java.util.concurrent.TimeoutException e) {
             // 关键：超时只返回空，保留 flow 与 WebSocket，前端可在二维码有效期内续轮询
             log.debug("真实登录等待扫码超时（可续轮询） loginid={}", loginId);
@@ -169,13 +171,30 @@ public class YktWebSocketLogin {
         closeQuietly(flow.ws);
     }
 
-    /** 用 UserID + Auth 调 /pc/web_login 换 sessionid。 */
-    private String exchangeSessionId(String userId, String auth, JsonNode rawUserId) throws Exception {
+    /**
+     * 用 UserID + Auth 调 /pc/web_login 换 sessionid，并带出完整 L1 登录态。
+     *
+     * <p>§6.2 ①：checkin 需要 csrftoken / X-UID / university-id / uv-id，
+     * 过去只返回 sessionid 导致课堂凭证换取必 401。这里从 user_info 的 Cookie
+     * 与响应体宽松解析这些字段，存进 SessionContext 一路带到 AuthService。
+     */
+    private com.jiclub.gongxiaohu.model.AuthModels.SessionContext exchangeSessionId(
+            String userId, String auth, JsonNode rawUserId) throws Exception {
         HttpResponse<String> pre = http.send(
                 HttpRequest.newBuilder(URI.create(baseUrl + "/v/course_meta/user_info"))
                         .header("User-Agent", UA).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
         String csrf = cookie(pre, "csrftoken");
+        String uni = "", uv = "";
+        try {
+            JsonNode info = mapper.readTree(pre.body());
+            JsonNode d = info.path("data");
+            if (d.isMissingNode()) d = info;
+            uni = firstText(d, "university_id", "universityId", "school_id");
+            uv = firstText(d, "uv_id", "uvId");
+        } catch (Exception ignored) {
+            // user_info 结构因区域而异，解析不到就留空，可由 /auth/import-cookie 补齐
+        }
 
         ObjectNode body = mapper.createObjectNode();
         if (rawUserId != null && rawUserId.isNumber()) {
@@ -199,8 +218,22 @@ public class YktWebSocketLogin {
         if (sessionId.isBlank()) {
             log.warn("web_login 未返回 sessionid，响应片段={}",
                     resp.body() == null ? "" : resp.body().substring(0, Math.min(200, resp.body().length())));
+            sessionId = "sk-" + userId;
         }
-        return sessionId.isBlank() ? "sk-" + userId : sessionId;
+        // 保留同一会话的 Cookie 串供 checkin 使用（csrftoken 必须与 sessionid 同源）
+        String rawCookie = "csrftoken=" + csrf + "; sessionid=" + sessionId;
+        if (!uni.isBlank()) rawCookie += "; university_id=" + uni;
+        if (!uv.isBlank()) rawCookie += "; uv_id=" + uv;
+        return new com.jiclub.gongxiaohu.model.AuthModels.SessionContext(
+                sessionId, csrf, userId, uni, uv, "", rawCookie);
+    }
+
+    private static String firstText(JsonNode node, String... keys) {
+        for (String k : keys) {
+            JsonNode v = node.get(k);
+            if (v != null && !v.isNull() && !v.asText().isBlank()) return v.asText();
+        }
+        return "";
     }
 
     private WebSocket.Listener listener(LoginFlow flow) {

@@ -1,10 +1,14 @@
 package com.jiclub.gongxiaohu.controller;
 
 import com.jiclub.gongxiaohu.common.ApiResponse;
+import com.jiclub.gongxiaohu.gateway.LessonCredentialClient;
 import com.jiclub.gongxiaohu.model.AuthModels.LoginQr;
 import com.jiclub.gongxiaohu.model.AuthModels.LoginResult;
 import com.jiclub.gongxiaohu.model.AuthModels.SessionInfo;
 import com.jiclub.gongxiaohu.service.AuthService;
+import com.jiclub.gongxiaohu.service.InClassQuizService;
+import com.jiclub.gongxiaohu.service.JoinLessonService;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,9 +24,17 @@ import java.util.Map;
 @RequestMapping("/api/v1/auth")
 public class AuthController {
     private final AuthService authService;
+    private final JoinLessonService joinLessonService;
+    private final InClassQuizService inClassQuizService;
+    private final ObjectProvider<LessonCredentialClient> credentialClient;
 
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, JoinLessonService joinLessonService,
+                          InClassQuizService inClassQuizService,
+                          ObjectProvider<LessonCredentialClient> credentialClient) {
         this.authService = authService;
+        this.joinLessonService = joinLessonService;
+        this.inClassQuizService = inClassQuizService;
+        this.credentialClient = credentialClient;
     }
 
     /** 1. 获取登录二维码（mock 模式返回本地生成的二维码 data URL）。 */
@@ -61,10 +73,19 @@ public class AuthController {
         return ApiResponse.ok(authService.renew(token));
     }
 
-    /** 5. 退出登录。 */
+    /** 5. 退出登录：同时清除后端内存中的课堂凭证与自渲染会话（方案④安全边界）。 */
     @PostMapping("/logout")
     public ApiResponse<Void> logout(
             @RequestHeader(value = "X-Session-Token", required = false) String token) {
+        try {
+            String sid = authService.resolveSessionKey(token);
+            LessonCredentialClient client = credentialClient.getIfAvailable();
+            if (client != null) client.evict(sid);
+            joinLessonService.evict(sid);
+            inClassQuizService.evict(sid);
+        } catch (Exception ignored) {
+            // token 已失效时仍需完成本地登出
+        }
         authService.logout(token);
         return ApiResponse.ok();
     }
@@ -81,6 +102,15 @@ public class AuthController {
     @PostMapping("/import-session")
     public ApiResponse<LoginResult> importSession(@RequestBody Map<String, String> body) {
         return ApiResponse.ok(authService.importSession(body.get("sessionId"), body.get("userId")));
+    }
+
+    /**
+     * §6.2 ①：导入整串 Cookie，补齐 L1 登录态（csrftoken / X-UID / university-id / uv-id）。
+     * 课堂凭证换取需要这些字段，仅 sessionid 会 401。Cookie 只存后端内存，不回传前端。
+     */
+    @PostMapping("/import-cookie")
+    public ApiResponse<LoginResult> importCookie(@RequestBody Map<String, String> body) {
+        return ApiResponse.ok(authService.importCookie(body.get("cookie"), body.get("userId")));
     }
 
     /** 便捷接口：仅演示模式用，一步完成「建票据→模拟确认→登录」，方便自动化联调。 */

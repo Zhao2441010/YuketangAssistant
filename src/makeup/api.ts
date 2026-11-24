@@ -223,22 +223,107 @@ export function fetchQuizzes(courseId: string): Promise<Quiz[]> {
   return request<Quiz[]>(`/quizzes?courseId=${encodeURIComponent(courseId)}`);
 }
 
-/** 一键进班：后端按博客第 1 节生成官方 join_lesson 链接（带 sessionid 需在官方域登录）。 */
+/**
+ * 进班（方案④：后端自渲染）。
+ * 后端用完整 L1 登录态换取课堂凭证三元组，凭证只留后端内存；
+ * 前端仅拿 entryId，再凭它拉课件/题目自绘，无需进入官方课堂页、无需注入 Cookie。
+ */
 export interface JoinLessonResult {
   lessonId: string;
   courseName: string;
-  joinUrl: string;
-  ts: number;
+  entryId: string;
+  joinUrl: string;          // 官方在读学生固定入口（供用户主动在浏览器打开，非主路径）
+  credentialReady: boolean;  // 三元组是否换出成功
+  hint: string;              // 降级提示（如动态码签到需本人扫码）
+  issuedAt: number;
   expiresAt: number;
-  credential: string;
   fromCache: boolean;
 }
-export function joinLesson(courseId: string): Promise<JoinLessonResult> {
+/** enhance=true 时后端才会按需尝试 checkin 换 pptJwt（仅自渲染增强，不影响进课堂）。 */
+export function joinLesson(courseId: string, enhance = false): Promise<JoinLessonResult> {
   const sid = getSessionId();
-  return request<JoinLessonResult>('/lessons/join', {
+  return request<JoinLessonResult>(`/lessons/join?enhance=${enhance}`, {
     method: 'POST',
     body: JSON.stringify({ courseId, sessionKey: sid || '' })
   });
+}
+
+/** 官方域 Cookie 注入信息（供 App 内 WebView 免扫码进入课堂会话）。 */
+export interface EntryCookie {
+  domain: string;
+  cookie: string;
+  note: string;
+}
+export function fetchEntryCookie(): Promise<EntryCookie> {
+  return request<EntryCookie>('/lessons/entry-cookie');
+}
+
+/** 方案④自渲染视图：后端持 pptJwt 拉好课件与题目，前端直接绘制。 */
+export interface ClassroomView {
+  lessonId: string;
+  courseName: string;
+  presentations: Presentation[];
+  quizzes: Quiz[];
+  credentialReady: boolean;
+  hint: string;
+}
+export function fetchClassroomRender(entryId: string): Promise<ClassroomView> {
+  return request<ClassroomView>(`/lessons/${encodeURIComponent(entryId)}/render`);
+}
+
+/** 验证诊断（§6.7）：后端把 checkin 的验证证据结构化返回，无需手工抓包。全部脱敏。 */
+export interface DiagnosticRecord {
+  time: string;
+  lessonId: string;
+  source: number;
+  url: string;
+  requestHeaders: Record<string, string>;
+  missingHeaders: string[];
+  httpStatus: number;
+  bizCode: number;
+  bizMessage: string;
+  setAuthPresent: boolean;
+  setAuthFingerprint: string;
+  socketJwtPresent: boolean;
+  identityIdPresent: boolean;
+  outcome: string;
+  elapsedMs: number;
+}
+export interface DiagnosticChecklist {
+  checkinHeadersCaptured: boolean;
+  setAuthCaptured: boolean;
+  tripleCaptured: boolean;
+  websocketHintCaptured: boolean;
+  getTokenKnown: boolean;
+  note: string;
+}
+export interface DiagnosticReport {
+  totalAttempts: number;
+  records: DiagnosticRecord[];
+  checklist: DiagnosticChecklist;
+  privacyNote: string;
+}
+export function fetchDiagnostics(): Promise<DiagnosticReport> {
+  return request<DiagnosticReport>('/diagnostics');
+}
+export function clearDiagnostics(): Promise<void> {
+  return request<void>('/diagnostics', { method: 'DELETE' });
+}
+
+/**
+ * 导入整串 Cookie 补齐 L1 登录态（csrftoken / X-UID / university-id / uv-id）。
+ * 课堂凭证换取需要这些字段；仅 sessionid 会 401。Cookie 只进后端内存，不落前端。
+ */
+export async function importCookie(cookie: string, userId?: string): Promise<LoginResult> {
+  const res = await fetch(`${API_BASE}/auth/import-cookie`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cookie, userId: userId || '' })
+  }).then(r => r.json()) as ApiResponse<LoginResult>;
+  if (res.code !== 0) throw new Error(res.message || 'Cookie 导入失败');
+  setToken(res.data.token);
+  setSessionId(res.data.sessionKey);
+  return res.data;
 }
 
 /** 提前获取题目：老师发题前预览课件里已下发的题目（博客第 5 节）。 */

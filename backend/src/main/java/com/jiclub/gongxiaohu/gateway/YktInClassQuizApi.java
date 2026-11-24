@@ -50,44 +50,44 @@ public class YktInClassQuizApi {
     private final HttpClient http = HttpClient.newHttpClient();
     private final ObjectMapper mapper;
     private final String baseUrl;
+    private final LessonCredentialClient credentialClient;
 
-    public YktInClassQuizApi(AppProperties properties, ObjectMapper mapper) {
+    public YktInClassQuizApi(AppProperties properties, ObjectMapper mapper,
+                             LessonCredentialClient credentialClient) {
         this.mapper = mapper;
         this.baseUrl = properties.yktGateway().baseUrl();
+        this.credentialClient = credentialClient;
     }
 
-    /** 签到并换取 pptJwt（课件题与提交都需要它）。 */
+    /**
+     * 签到并换取 pptJwt（课件题与提交都需要它）。
+     *
+     * <p>§6.5：改由 {@link LessonCredentialClient} 统一换取三元组凭证——
+     * 原实现只带 Cookie:sessionid、只取 Set-Auth，丢失 lessonToken/identityId
+     * 且缺 csrftoken/X-UID/uv-id 等全套头，实测必 401/50000。
+     *
+     * @return pptJwt；动态码签到被拒(50070)等场景返回空串，由上层降级看题
+     */
     public String checkinForJwt(String sessionId, String lessonId) {
         try {
-            ObjectNode body = mapper.createObjectNode();
-            body.put("source", 21); // 二维码来源
-            body.put("lessonId", String.valueOf(lessonId));
-            body.put("joinIfNotIn", true);
+            // 兼容旧调用方：仅有 sessionid 时构造最小上下文。
+            // 完整 L1（含 csrftoken）由 JoinLessonService / 新入口通过 enterLesson(ctx,...) 提供。
+            return credentialClient.pptJwt(
+                    com.jiclub.gongxiaohu.model.AuthModels.SessionContext.minimal(sessionId),
+                    lessonId);
+        } catch (com.jiclub.gongxiaohu.common.BizException e) {
+            log.warn("随堂签到不可用 lessonId={}: {}", lessonId, e.getMessage());
+            return "";
+        }
+    }
 
-            HttpResponse<String> resp = http.send(
-                    HttpRequest.newBuilder(URI.create(baseUrl + "/api/v3/lesson/checkin"))
-                            .header("User-Agent", UA)
-                            .header("Accept", "application/json, text/plain, */*")
-                            .header("Content-Type", "application/json")
-                            .header("Cookie", "sessionid=" + sessionId)
-                            .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
-                            .build(),
-                    HttpResponse.BodyHandlers.ofString());
-
-            String jwt = resp.headers().firstValue("Set-Auth").orElse("");
-            JsonNode root = mapper.readTree(resp.body());
-            int code = root.path("code").asInt(0);
-            if (code != 0) {
-                log.warn("随堂签到失败 lessonId={} code={} msg={}", lessonId, code, root.path("msg").asText());
-                return "";
-            }
-            if (jwt.isBlank()) {
-                log.warn("随堂签到未返回 Set-Auth JWT lessonId={}", lessonId);
-                return "";
-            }
-            return jwt;
-        } catch (Exception e) {
-            log.warn("随堂签到异常 lessonId={}: {}", lessonId, e.getMessage());
+    /** 方案④主入口：用完整 L1 上下文换取凭证（三元组留后端内存，仅返回 pptJwt）。 */
+    public String checkinForJwt(com.jiclub.gongxiaohu.model.AuthModels.SessionContext ctx,
+                                String lessonId) {
+        try {
+            return credentialClient.pptJwt(ctx, lessonId);
+        } catch (com.jiclub.gongxiaohu.common.BizException e) {
+            log.warn("随堂签到不可用 lessonId={}: {}", lessonId, e.getMessage());
             return "";
         }
     }

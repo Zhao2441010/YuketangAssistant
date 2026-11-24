@@ -61,9 +61,11 @@ public class AuthService {
 
         String token = "GXH-" + UUID.randomUUID().toString().replace("-", "");
         long expiresAt = Instant.now().plusSeconds(SESSION_TTL_SECONDS).toEpochMilli();
-        sessions.put(token, new LocalSession(credential.userId(), credential.sessionKey(), expiresAt));
-        log.info("用户登录成功 userId={} token={}",
-                maskUserId(credential.userId()), maskToken(token));
+        var ctx = credential.context();
+        sessions.put(token, new LocalSession(credential.userId(),
+                credential.sessionKey(), ctx, expiresAt));
+        log.info("用户登录成功 userId={} token={} 有csrftoken={}",
+                maskUserId(credential.userId()), maskToken(token), !ctx.csrftoken().isBlank());
         return new LoginResult(token, credential.userId(), credential.sessionKey(),
                 expiresAt, properties.isMockMode());
     }
@@ -88,6 +90,31 @@ public class AuthService {
         sessions.put(token, new LocalSession(uid, sessionId, expiresAt));
         log.info("已导入真实会话 token={} userId={}", maskToken(token), maskUserId(uid));
         return new LoginResult(token, uid, sessionId, expiresAt, false);
+    }
+
+    /**
+     * §6.2 ①：导入整串 Cookie，持久化完整 L1 登录态。
+     *
+     * <p>课堂凭证换取（checkin）需要 csrftoken / X-UID / university-id / uv-id，
+     * 仅有 sessionid 会得到 401 / 50000。用户可从浏览器 DevTools 复制整串 Cookie 导入。
+     * Cookie 仅存内存，不写日志、不回传前端。
+     */
+    public LoginResult importCookie(String cookie, String userId) {
+        if (cookie == null || cookie.isBlank()) {
+            throw BizException.badRequest("Cookie 不能为空");
+        }
+        com.jiclub.gongxiaohu.model.AuthModels.SessionContext ctx =
+                com.jiclub.gongxiaohu.model.AuthModels.SessionContext.fromCookie(cookie, userId);
+        if (ctx.sessionId().isBlank()) {
+            throw BizException.badRequest("Cookie 中未找到 sessionid，请确认复制完整");
+        }
+        String token = "GXH-" + UUID.randomUUID().toString().replace("-", "");
+        long expiresAt = Instant.now().plusSeconds(SESSION_TTL_SECONDS).toEpochMilli();
+        String uid = ctx.userId().isBlank() ? "imported" : ctx.userId();
+        sessions.put(token, new LocalSession(uid, ctx.sessionId(), ctx, expiresAt));
+        log.info("已导入完整 L1 会话 userId={} 有csrftoken={} 有uvId={}",
+                maskUserId(uid), !ctx.csrftoken().isBlank(), !ctx.uvId().isBlank());
+        return new LoginResult(token, uid, ctx.sessionId(), expiresAt, false);
     }
 
     /** 账号密码登录：真实模式调官方接口，成功后建立本地会话。 */
@@ -145,13 +172,26 @@ public class AuthService {
         return session.sessionKey();
     }
 
+    /** 取完整 L1 上下文（课堂凭证换取用）；token 无效抛 401。 */
+    public com.jiclub.gongxiaohu.model.AuthModels.SessionContext resolveContext(String token) {
+        if (token == null || token.isBlank()) {
+            throw new BizException(401, "缺少登录凭据，请扫码登录");
+        }
+        LocalSession session = sessions.get(token);
+        if (session == null || session.expiresAt() < System.currentTimeMillis()) {
+            sessions.remove(token);
+            throw new BizException(401, "登录已过期，请重新扫码登录");
+        }
+        maybeRenew(token, session);
+        return session.context();
+    }
+
     /** 滑动续期：剩余不足阈值时自动延长 2 小时，用户无感。 */
     private void maybeRenew(String token, LocalSession session) {
         long remaining = session.expiresAt() - System.currentTimeMillis();
         if (remaining < RENEW_THRESHOLD_SECONDS * 1000) {
-            LocalSession renewed = new LocalSession(session.userId(), session.sessionKey(),
-                    Instant.now().plusSeconds(SESSION_TTL_SECONDS).toEpochMilli());
-            sessions.put(token, renewed);
+            sessions.put(token, session.renewed(
+                    Instant.now().plusSeconds(SESSION_TTL_SECONDS).toEpochMilli()));
             log.debug("会话自动续期 token={}", maskToken(token));
         }
     }
@@ -198,5 +238,22 @@ public class AuthService {
         return token.substring(0, 7) + "****";
     }
 
-    private record LocalSession(String userId, String sessionKey, long expiresAt) {}
+    /**
+     * 本地会话（L2）。context 保存 L1 登录态的完整字段，供课堂凭证换取时使用；
+     * 旧链路通过 3 参数构造器退化为仅 sessionid 的最小上下文。
+     */
+    private record LocalSession(String userId, String sessionKey,
+                                com.jiclub.gongxiaohu.model.AuthModels.SessionContext context,
+                                long expiresAt) {
+        LocalSession(String userId, String sessionKey, long expiresAt) {
+            this(userId, sessionKey,
+                    com.jiclub.gongxiaohu.model.AuthModels.SessionContext.minimal(sessionKey),
+                    expiresAt);
+        }
+
+        /** 续期时保留 context，避免丢失 csrftoken 等 L1 字段。 */
+        LocalSession renewed(long newExpiresAt) {
+            return new LocalSession(userId, sessionKey, context, newExpiresAt);
+        }
+    }
 }

@@ -38,14 +38,25 @@ public final class Models {
             @NotBlank(message = "sessionKey 不能为空") String sessionKey
     ) {}
 
-    /** 进班结果：joinUrl 即博客第 1 节的临时签名链接。 */
+    /**
+     * 进班结果（方案④：后端自渲染）。
+     *
+     * <p>凭证三元组只留后端内存，<b>绝不回传前端</b>。前端凭 entryId 调
+     * 自渲染接口（/lessons/{entryId}/slides、/inclass/quizzes）自己绘制课件与题目。
+     *
+     * <p>joinUrl 保留字段名以兼容小程序（复制到剪贴板在浏览器打开），
+     * 但值改为官方<b>在读学生固定入口</b> /lesson/fullscreen/v3/{lessonId}?source=5
+     * ——无 sign / 无 ts，替代必 401 的 /v2/web/join_lesson?lesson_id=。
+     */
     public record JoinLessonResult(
             String lessonId,
             String courseName,
-            String joinUrl,
+            String entryId,            // 自渲染会话 id（后端内存，前端凭它取课件/题目）
+            String joinUrl,            // 官方固定课堂入口（兼容小程序，无 sign/ts）
+            boolean credentialReady,   // 三元组是否成功换出
+            String hint,               // 失败/降级提示（如动态码签到需本人扫码）
             long issuedAt,
             long expiresAt,
-            String credential,     // 模拟用 session_key 换取的课堂凭据
             boolean fromCache
     ) {}
 

@@ -40,10 +40,13 @@ public class RealYktGateway implements YktGateway {
     private final AppProperties.YktGateway props;
     private final RestClient client;
     private final YktWebSocketLogin wsLogin;
+    private final LessonCredentialClient credentialClient;
 
-    public RealYktGateway(AppProperties properties, YktWebSocketLogin wsLogin) {
+    public RealYktGateway(AppProperties properties, YktWebSocketLogin wsLogin,
+                          LessonCredentialClient credentialClient) {
         this.props = properties.yktGateway();
         this.wsLogin = wsLogin;
+        this.credentialClient = credentialClient;
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofMillis(props.connectTimeoutMs()));
         factory.setReadTimeout(Duration.ofMillis(props.readTimeoutMs()));
@@ -186,11 +189,17 @@ public class RealYktGateway implements YktGateway {
 
     @Override
     public String exchangeLessonCredential(String sessionKey, String lessonId) {
-        // 博客第 1 节：正规在读学生学号已在班级名单，老师点开始上课后 status=1，
-        // 直接用本地持久化的 session_key 即课堂凭据——不需要向服务端"换取"额外凭据。
-        // 之前调 join_lesson?preview=1 探测凭据会失败（该端点返回 HTML 非 JSON，且本就无需调用）。
-        return sessionKey.startsWith("sessionid=")
+        // §6.5 第 1 项修正：旧实现把 sessionid 原样当「课堂凭据」，等于没有换。
+        // 真正的课堂态凭证是 checkin 换出的三元组，pptJwt 才是课件/题目的 Bearer。
+        String sid = sessionKey.startsWith("sessionid=")
                 ? sessionKey.substring("sessionid=".length()) : sessionKey;
+        try {
+            return credentialClient.pptJwt(
+                    com.jiclub.gongxiaohu.model.AuthModels.SessionContext.minimal(sid), lessonId);
+        } catch (Exception e) {
+            log.info("课堂凭证换取不可用 lessonId={}: {}", lessonId, e.getMessage());
+            return "";
+        }
     }
 
     @Override

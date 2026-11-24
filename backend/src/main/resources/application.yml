@@ -15,10 +15,12 @@ gongxiaohu:
   # 当前学校为「长江雨课堂」，已切换为 real + changjiang.yuketang.cn
   mode: real
 
-  # 免扫码进班签名设置
+  # 本地防误触 / 幂等设置（§6.3 ③ 降级说明）
+  # 注意：官方 join_lesson 的 sign 由服务端密钥签发，客户端无法构造也不应构造。
+  # 这里的 secret 只用于本地 verify-sign 幂等判断与进班会话 TTL，官方不认此签名。
   join-signature:
     secret: dev-only-secret-change-me   # 生产环境请替换为随机密钥，勿提交到仓库
-    ttl-seconds: 300                     # 临时进班链接有效期 5 分钟
+    ttl-seconds: 300                     # 自渲染会话(entryId)有效期 5 分钟
 
   # 真实模式下网关配置（mode: real 时生效）
   # 说明：除 auth-status 与 join-lesson 外，以下路径来自博客描述/约定，
@@ -54,6 +56,7 @@ gongxiaohu:
 
 logging:
   level:
-    site.jiclub.gongxiaohu: debug
+    # 修正：实际包名是 com.jiclub.gongxiaohu（旧值 site.* 导致 debug 从未生效）
+    com.jiclub.gongxiaohu: debug
   pattern:
     console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"

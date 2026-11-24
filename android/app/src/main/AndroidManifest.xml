@@ -25,6 +25,13 @@
 
         </activity>
 
+        <!-- App 内 WebView 承载官方课堂页（CookieManager 注入的 Cookie 仅对本 App WebView 生效） -->
+        <activity
+            android:name=".ClassroomWebViewActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|uiMode|density"
+            android:theme="@style/AppTheme.NoActionBar" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
