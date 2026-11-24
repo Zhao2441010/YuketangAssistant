@@ -77,6 +77,8 @@ public class AuthController {
     @PostMapping("/logout")
     public ApiResponse<Void> logout(
             @RequestHeader(value = "X-Session-Token", required = false) String token) {
+        // 先取学号用于审计，再清会话（清完就查不到了）
+        String userId = authService.peekUserId(token);
         try {
             String sid = authService.resolveSessionKey(token);
             LessonCredentialClient client = credentialClient.getIfAvailable();
@@ -87,6 +89,7 @@ public class AuthController {
             // token 已失效时仍需完成本地登出
         }
         authService.logout(token);
+        com.jiclub.gongxiaohu.common.AuditLog.logout(userId);
         return ApiResponse.ok();
     }
 

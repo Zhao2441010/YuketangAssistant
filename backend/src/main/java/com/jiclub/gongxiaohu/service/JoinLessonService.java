@@ -162,6 +162,8 @@ public class JoinLessonService {
 
         log.info("建立课堂自渲染会话 course={} lesson={} entryId={} 凭证={}",
                 lesson.courseId(), lesson.lessonId(), mask(entryId), credentialReady ? "就绪" : "降级");
+        com.jiclub.gongxiaohu.common.AuditLog.enterLesson(ctx.userId(), lesson.courseId(),
+                lesson.lessonId(), entryId, credentialReady);
         return new JoinLessonResult(
                 lesson.lessonId(), lesson.courseName(), entryId, officialEntry,
                 credentialReady, hint, now, now + ttl, fromCache);

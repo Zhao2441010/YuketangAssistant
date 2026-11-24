@@ -55,8 +55,14 @@ gongxiaohu:
   upload-dir: ./data/draft-images
 
 logging:
+  # 日志分流见 logback-spring.xml：
+  #   logs/app.log   —— 运行/诊断日志（学号脱敏，14 天）
+  #   logs/audit.log —— 登录/进课堂审计（学号明文，180 天）
+  # 目录默认 ./logs，生产用环境变量 LOG_DIR 指定（systemd 里 /opt/ykt-backend/logs）
   level:
     # 修正：实际包名是 com.jiclub.gongxiaohu（旧值 site.* 导致 debug 从未生效）
     com.jiclub.gongxiaohu: debug
+    ACCESS: info        # 每请求一行访问日志；嫌吵可调 warn
+    AUDIT: info
   pattern:
-    console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"

@@ -66,6 +66,7 @@ public class AuthService {
                 credential.sessionKey(), ctx, expiresAt));
         log.info("用户登录成功 userId={} token={} 有csrftoken={}",
                 maskUserId(credential.userId()), maskToken(token), !ctx.csrftoken().isBlank());
+        com.jiclub.gongxiaohu.common.AuditLog.loginOk("qrcode", credential.userId());
         return new LoginResult(token, credential.userId(), credential.sessionKey(),
                 expiresAt, properties.isMockMode());
     }
@@ -89,6 +90,7 @@ public class AuthService {
         String uid = userId == null || userId.isBlank() ? "imported" : userId;
         sessions.put(token, new LocalSession(uid, sessionId, expiresAt));
         log.info("已导入真实会话 token={} userId={}", maskToken(token), maskUserId(uid));
+        com.jiclub.gongxiaohu.common.AuditLog.loginOk("import-session", uid);
         return new LoginResult(token, uid, sessionId, expiresAt, false);
     }
 
@@ -114,6 +116,7 @@ public class AuthService {
         sessions.put(token, new LocalSession(uid, ctx.sessionId(), ctx, expiresAt));
         log.info("已导入完整 L1 会话 userId={} 有csrftoken={} 有uvId={}",
                 maskUserId(uid), !ctx.csrftoken().isBlank(), !ctx.uvId().isBlank());
+        com.jiclub.gongxiaohu.common.AuditLog.loginOk("import-cookie", uid);
         return new LoginResult(token, uid, ctx.sessionId(), expiresAt, false);
     }
 
@@ -137,6 +140,7 @@ public class AuthService {
             com.jiclub.gongxiaohu.gateway.YktPasswordLoginApi.LoginOutcome outcome =
                     api.login(account, password, type, ticket, randstr);
             if (!outcome.ok()) {
+                com.jiclub.gongxiaohu.common.AuditLog.loginFail("password", account, outcome.message());
                 throw BizException.badRequest(outcome.message());
             }
             userId = outcome.userId();
@@ -147,6 +151,7 @@ public class AuthService {
         String uid = userId.isBlank() ? "imported" : userId;
         sessions.put(token, new LocalSession(uid, sessionId, expiresAt));
         log.info("账号密码登录成功 userId={} token={}", maskUserId(uid), maskToken(token));
+        com.jiclub.gongxiaohu.common.AuditLog.loginOk("password", uid);
         return new LoginResult(token, uid, sessionId, expiresAt, properties.isMockMode());
     }
 
@@ -208,6 +213,17 @@ public class AuthService {
         }
         maybeRenew(token, session);
         return toSessionInfo(token, sessions.get(token));
+    }
+
+    /**
+     * 只读查询：按本地 token 反查学号，不校验续期、不抛异常。
+     * 供访问日志标注"这次请求是谁发的"，token 无效时返回 null。
+     */
+    public String peekUserId(String token) {
+        if (token == null || token.isBlank()) return null;
+        LocalSession session = sessions.get(token);
+        if (session == null || session.expiresAt() < System.currentTimeMillis()) return null;
+        return session.userId();
     }
 
     public SessionInfo sessionInfo(String token) {

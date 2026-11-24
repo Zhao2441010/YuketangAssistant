@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  工小湖后端日志配置（2026-11-24 新增）
+
+  三类日志分流：
+  1. CONSOLE  —— 控制台，同时被 systemd 收进 journalctl
+  2. APP_FILE —— logs/app.log，运行/诊断日志，学号脱敏，按天+50MB 轮转，保留 14 天
+  3. AUDIT_FILE —— logs/audit.log，登录/进课堂等行为审计，学号明文，保留 180 天
+
+  目录由环境变量 LOG_DIR 指定（systemd 里设为 /opt/ykt-backend/logs），
+  未设置时落到运行目录下的 logs/（本地开发即 backend/logs）。
+-->
+<configuration>
+    <property name="LOG_DIR" value="${LOG_DIR:-logs}"/>
+    <property name="LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <appender name="APP_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/app.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/app.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 审计日志：只写文件，不进 app.log / 控制台，避免明文扩散 -->
+    <appender name="AUDIT_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/audit.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/audit.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize>
+            <maxHistory>180</maxHistory>
+            <totalSizeCap>200MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <logger name="AUDIT" level="INFO" additivity="false">
+        <appender-ref ref="AUDIT_FILE"/>
+    </logger>
+
+    <!-- 访问日志（AccessLogFilter）走独立 logger，等级可在 application.yml 调 -->
+    <logger name="ACCESS" level="INFO" additivity="true"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="APP_FILE"/>
+    </root>
+</configuration>
