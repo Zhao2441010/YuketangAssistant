@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ArrowLeft, BookOpen, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight,
-  Clock, FileQuestion, Image as ImageIcon, Layers, Loader2, Maximize2, MousePointer2,
-  Presentation as PresentationIcon
+  ArrowLeft, BookOpen, CheckCircle2, ChevronDown, ChevronRight,
+  Clock, FileQuestion, Image as ImageIcon, Layers, Loader2, Maximize2, Minimize2,
+  MousePointer2, Presentation as PresentationIcon, Smartphone, Monitor
 } from 'lucide-react';
 import {
   Activity, Course, Presentation, Slide, fetchActivities, fetchSlides
@@ -38,6 +38,64 @@ export default function CourseCenter({ courses, onBack }: Props) {
   const [pageInput, setPageInput] = useState('');          // 页码输入框
   const pageInputFocused = useRef(false);                  // 输入中不被翻页覆盖
   const wheelLock = useRef(0);                             // 滚轮翻页节流
+  // ===== 全屏 / 横竖屏 / 缩放（对齐小程序课件页）=====
+  const [fullscreen, setFullscreen] = useState(false);
+  const [landscape, setLandscape] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const pinch = useRef<{ dist: number; cx: number; cy: number; zoom: number; ox: number; oy: number } | null>(null);
+  const lastTap = useRef(0);
+  const slideThumbRef = useRef<HTMLDivElement | null>(null);
+
+  const resetView = () => { setZoom(1); setOffset({ x: 0, y: 0 }); };
+  const toggleFullscreen = () => { setFullscreen(v => !v); resetView(); };
+  // CSS 旋转模拟横屏（WebView 内比 ScreenOrientation 插件更可靠）
+  const toggleOrientation = () => setLandscape(v => !v);
+
+  // 双指缩放 + 平移；单指/滚轮留给翻页
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const a = e.touches[0], b = e.touches[1];
+      pinch.current = {
+        dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+        cx: (a.clientX + b.clientX) / 2, cy: (a.clientY + b.clientY) / 2,
+        zoom, ox: offset.x, oy: offset.y
+      };
+    }
+  };
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinch.current) {
+      const a = e.touches[0], b = e.touches[1];
+      const ratio = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) / (pinch.current.dist || 1);
+      let z = Math.max(1, Math.min(4, pinch.current.zoom * ratio));
+      let ox = pinch.current.ox + ((a.clientX + b.clientX) / 2 - pinch.current.cx);
+      let oy = pinch.current.oy + ((a.clientY + b.clientY) / 2 - pinch.current.cy);
+      if (z <= 1) { ox = 0; oy = 0; }
+      setZoom(z); setOffset({ x: ox, y: oy });
+    }
+  };
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) {
+      pinch.current = null;
+      if (zoom <= 1.01 && (offset.x || offset.y)) resetView();
+    }
+  };
+  // 双击切换全屏
+  const onPptTap = () => {
+    const now = Date.now();
+    if (now - lastTap.current < 350) { lastTap.current = 0; toggleFullscreen(); }
+    else lastTap.current = now;
+  };
+  // 翻页时重置视图
+  const gotoSlide = (i: number) => {
+    setSlideIndex(i); resetView();
+    // 缩略图滚到可视区
+    const el = slideThumbRef.current;
+    if (el) {
+      const child = el.children[i] as HTMLElement | undefined;
+      if (child) child.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
+  };
 
   const enterCourse = async (course: Course) => {
     setSelectedCourse(course);
@@ -79,7 +137,7 @@ export default function CourseCenter({ courses, onBack }: Props) {
   // 点击题目/缩略图跳转到指定课件页
   const jumpTo = (presIdx: number, slideIdx: number) => {
     setPresIndex(presIdx);
-    setSlideIndex(slideIdx);
+    gotoSlide(slideIdx);
   };
 
   // 滚轮翻页：用原生监听（passive:false）才能 preventDefault 阻止浏览器页面滚动。
@@ -95,7 +153,11 @@ export default function CourseCenter({ courses, onBack }: Props) {
       const now = Date.now();
       if (now - wheelLock.current < 260) return; // 节流：一次滚动只翻一页
       if (Math.abs(e.deltaY) < 8) return;
-      setSlideIndex(i => Math.max(0, Math.min(slideCount - 1, i + (e.deltaY > 0 ? 1 : -1))));
+      setSlideIndex(i => {
+        const next = Math.max(0, Math.min(slideCount - 1, i + (e.deltaY > 0 ? 1 : -1)));
+        return next;
+      });
+      setZoom(1); setOffset({ x: 0, y: 0 });
       wheelLock.current = now;
     };
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -208,7 +270,7 @@ export default function CourseCenter({ courses, onBack }: Props) {
         ) : (
           <>
             {/* ===== 测验区：题目集中在最上方（已结束/进行中课堂一致）===== */}
-            {quizItems.length > 0 && (
+            {quizItems.length > 0 && !fullscreen && (
               <section className="bg-white rounded-3xl border border-orange-100 overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.02)] mb-4">
                 <button onClick={() => setShowProblems(v => !v)}
                   className="w-full px-4 py-3 flex items-center justify-between bg-orange-50/70 hover:bg-orange-50 transition-colors">
@@ -247,11 +309,11 @@ export default function CourseCenter({ courses, onBack }: Props) {
               </section>
             )}
 
-            {/* ===== 课件区：课件切换 + 侧边预览 + 滚轮翻页 ===== */}
-            <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+            {/* ===== 课件区：切换栏 + 全屏舞台 + 下方缩略图（对齐小程序）===== */}
+            <div className={`flex items-center justify-between gap-2 mb-3 flex-wrap ${fullscreen ? 'hidden' : ''}`}>
               <div className="flex items-center gap-1.5 flex-wrap">
                 {presentations.map((p, i) => (
-                  <button key={p.id} onClick={() => { setPresIndex(i); setSlideIndex(0); }}
+                  <button key={p.id} onClick={() => { setPresIndex(i); gotoSlide(0); }}
                     className={`px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all ${
                       i === presIndex ? 'bg-[#007AFF] text-white' : 'bg-white text-[#3A3A3C] border border-black/[0.06]'}`}>
                     <Layers className="w-3.5 h-3.5" /> {p.title} ({p.slidesCount}页)
@@ -259,81 +321,91 @@ export default function CourseCenter({ courses, onBack }: Props) {
                 ))}
               </div>
               <span className="text-[10px] text-[#8E8E93] flex items-center gap-1">
-                <MousePointer2 className="w-3 h-3" /> 滚轮滑动翻页
+                <MousePointer2 className="w-3 h-3" /> 滑动/滚轮翻页 · 双击全屏
               </span>
             </div>
 
             {currentPres && current ? (
-              <div className="bg-white rounded-3xl border border-black/[0.06] overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.02)]">
-                <div className="flex">
-                  {/* 侧边预览：点击缩略图快速跳转 */}
-                  <aside className="w-[92px] sm:w-[120px] shrink-0 bg-[#FAFAFA] border-r border-black/[0.06] max-h-[560px] overflow-y-auto p-1.5 space-y-1.5">
-                    {currentPres.slides.map((s, i) => (
-                      <button key={s.id || i} onClick={() => setSlideIndex(i)}
-                        className={`w-full rounded-lg overflow-hidden border-2 transition-all relative ${
-                          i === slideIndex ? 'border-[#007AFF]' : 'border-transparent hover:border-[#C7C7CC]'}`}>
-                        {s.cover ? (
-                          <img src={s.cover} alt={`P${s.page}`} className="w-full h-auto object-cover bg-white" loading="lazy" referrerPolicy="no-referrer" />
-                        ) : (
-                          <div className="w-full aspect-video bg-slate-100 flex items-center justify-center">
-                            <ImageIcon className="w-4 h-4 text-[#C7C7CC]" />
-                          </div>
-                        )}
-                        <span className="absolute bottom-0 left-0 right-0 bg-black/55 text-white text-[9px] py-0.5 text-center">
-                          {s.page}
-                        </span>
-                        {s.problem && (
-                          <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-orange-500" title="含题目" />
-                        )}
+              <>
+              {/* 全屏遮罩 */}
+              {fullscreen && <div className="fixed inset-0 bg-black z-[1000]" />}
+              <div className={`${fullscreen ? 'fixed z-[1001] bg-black' : 'bg-white rounded-3xl border border-black/[0.06] overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.02)]'} ${
+                fullscreen ? 'inset-0 flex items-center justify-center' : ''}`}>
+                <div className={`flex flex-col w-full ${fullscreen ? 'h-full' : ''} ${
+                  landscape && fullscreen ? 'rotate-90 origin-center' : ''}`}
+                  style={fullscreen && landscape ? { width: '100vh', height: '100vw', transform: 'rotate(90deg) translate(50%, -50%)', position: 'absolute', top: '50%', left: '50%' } : undefined}>
+                  {/* 控制按钮组：全屏/退出、横竖屏（仅全屏显示），缩放按钮已去掉（纯手势） */}
+                  <div className={`flex items-center gap-2 ${fullscreen ? 'absolute top-3 right-3 z-20' : 'justify-end p-2'}`}>
+                    <button onClick={toggleFullscreen}
+                      className={`w-10 h-10 rounded-full flex items-center justify-center ${fullscreen ? 'bg-black/50 text-white' : 'bg-[#007AFF] text-white'}`}
+                      title={fullscreen ? '退出全屏' : '全屏'}>
+                      {fullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+                    </button>
+                    {fullscreen && (
+                      <button onClick={toggleOrientation}
+                        className="w-10 h-10 rounded-full flex items-center justify-center bg-black/50 text-white"
+                        title={landscape ? '竖屏' : '横屏'}>
+                        {landscape ? <Smartphone className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
                       </button>
-                    ))}
-                  </aside>
+                    )}
+                  </div>
 
-                  {/* 主图：滚轮快速翻页 */}
-                  <div className="flex-1 min-w-0 flex flex-col">
-                    <div ref={pptViewportRef}
-                      className="w-full bg-slate-50 flex items-center justify-center min-h-[320px] cursor-ns-resize">
-                      {current.cover ? (
-                        <img src={current.cover} alt={`第 ${current.page} 页`}
-                          className="w-full h-auto object-contain max-h-[520px]" referrerPolicy="no-referrer" />
-                      ) : (
-                        <div className="flex flex-col items-center gap-2 text-[#AEAEB2] py-16">
-                          <Maximize2 className="w-10 h-10" />
-                          <span className="text-xs">该页暂无图片，可查看课件原文件</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="px-4 py-2.5 border-t border-black/[0.06] flex items-center justify-between bg-[#FAFAFA]">
-                      <button onClick={() => setSlideIndex(i => Math.max(0, i - 1))} disabled={slideIndex === 0}
-                        className="px-3 py-1.5 rounded-xl bg-white border border-black/[0.06] text-xs flex items-center gap-1 disabled:opacity-40">
-                        <ChevronLeft className="w-3.5 h-3.5" /> 上一页
-                      </button>
-                      <div className="flex items-center gap-1.5 text-xs text-[#8E8E93]">
-                        <span>第</span>
-                        <input
-                          type="number"
-                          min={1}
-                          value={pageInput}
-                          onFocus={() => { pageInputFocused.current = true; }}
-                          onBlur={() => { pageInputFocused.current = false; setPageInput(String(current.page)); }}
-                          onChange={e => setPageInput(e.target.value)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') { e.preventDefault(); goToPage(); (e.target as HTMLInputElement).blur(); }
-                          }}
-                          className="w-12 px-1.5 py-1 rounded-lg border border-black/[0.1] bg-white text-center text-xs text-[#1C1C1E] outline-none focus:border-[#007AFF]"
-                          aria-label="跳转页码"
-                        />
-                        <span>页 / 共 {currentPres.slides.length} 页</span>
+                  {/* PPT 舞台：双击切换全屏，双指缩放平移，滚轮翻页 */}
+                  <div ref={pptViewportRef}
+                    onClick={onPptTap}
+                    onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+                    className={`w-full bg-slate-50 flex items-center justify-center overflow-hidden select-none ${fullscreen ? 'flex-1' : 'min-h-[300px] cursor-ns-resize'}`}>
+                    {current.cover ? (
+                      <img src={current.cover} alt={`第 ${current.page} 页`}
+                        className="w-full h-auto object-contain max-h-[70vh] pointer-events-none"
+                        style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: 'center center' }}
+                        referrerPolicy="no-referrer" />
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-[#AEAEB2] py-16">
+                        <Maximize2 className="w-10 h-10" />
+                        <span className="text-xs">该页暂无图片，可查看课件原文件</span>
                       </div>
-                      <button onClick={() => setSlideIndex(i => Math.min(currentPres.slides.length - 1, i + 1))}
-                        disabled={slideIndex >= currentPres.slides.length - 1}
-                        className="px-3 py-1.5 rounded-xl bg-white border border-black/[0.06] text-xs flex items-center gap-1 disabled:opacity-40">
-                        下一页 <ChevronRight className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                    )}
+                  </div>
+
+                  {/* 翻页栏：精简为页码指示 + 少量控制（全屏时底部半透明浮层） */}
+                  <div className={`px-4 py-2.5 flex items-center justify-between ${
+                    fullscreen ? 'bg-black/55 absolute bottom-0 left-0 right-0 text-white' : 'border-t border-black/[0.06] bg-[#FAFAFA]'}`}>
+                    <button onClick={() => gotoSlide(Math.max(0, slideIndex - 1))} disabled={slideIndex === 0}
+                      className="px-3 py-1.5 rounded-xl bg-white/90 border border-black/[0.06] text-xs disabled:opacity-40 text-[#1C1C1E]">
+                      ‹ 上一页
+                    </button>
+                    <span className="text-xs opacity-80">{current.page} / {currentPres.slides.length} 页</span>
+                    <button onClick={() => gotoSlide(Math.min(currentPres.slides.length - 1, slideIndex + 1))}
+                      disabled={slideIndex >= currentPres.slides.length - 1}
+                      className="px-3 py-1.5 rounded-xl bg-white/90 border border-black/[0.06] text-xs disabled:opacity-40 text-[#1C1C1E]">
+                      下一页 ›
+                    </button>
                   </div>
                 </div>
               </div>
+
+              {/* 下方缩略图预览条（横向滚动，全屏时隐藏） */}
+              {!fullscreen && (
+                <div ref={slideThumbRef} className="flex gap-2 overflow-x-auto mt-3 pb-2 px-1">
+                  {currentPres.slides.map((s, i) => (
+                    <button key={s.id || i} onClick={() => gotoSlide(i)}
+                      className={`shrink-0 w-[100px] rounded-lg overflow-hidden border-2 transition-all relative ${
+                        i === slideIndex ? 'border-[#007AFF]' : 'border-transparent hover:border-[#C7C7CC]'}`}>
+                      {s.cover ? (
+                        <img src={s.cover} alt={`P${s.page}`} className="w-full h-[56px] object-cover bg-white" loading="lazy" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="w-full h-[56px] bg-slate-100 flex items-center justify-center">
+                          <ImageIcon className="w-4 h-4 text-[#C7C7CC]" />
+                        </div>
+                      )}
+                      <span className="absolute bottom-0 left-0 right-0 bg-black/55 text-white text-[9px] py-0.5 text-center">{s.page}</span>
+                      {s.problem && <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-orange-500" title="含题目" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+              </>
             ) : (
               <div className="bg-white rounded-3xl p-10 text-center text-sm text-[#8E8E93]">该课件暂无页面</div>
             )}

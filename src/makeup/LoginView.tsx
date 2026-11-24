@@ -21,29 +21,36 @@ export default function LoginView({ onLogin }: Props) {
   const [captcha, setCaptcha] = useState<{ ticket: string; randstr: string } | null>(null);
   const [pwdBusy, setPwdBusy] = useState(false);
   const pollAbort = useRef<AbortController | null>(null);
+  // 轮询会话 ID：只有主动刷新二维码/卸载页面才 +1 使旧轮询失效。
+  // 不依赖 AbortController.signal.aborted——Android WebView 会主动 abort 长连接，
+  // 若据此停止轮询，扫码后前端将永远无反应。
+  const pollSession = useRef(0);
   const mounted = useRef(true);
 
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      pollSession.current += 1;
       pollAbort.current?.abort();
     };
   }, []);
 
   /** 创建二维码并立刻发起长轮询（与官方一致：单次挂起请求）。 */
   const startLogin = async () => {
+    pollSession.current += 1;           // 使旧轮询失效
+    const session = pollSession.current;
     pollAbort.current?.abort();
     setPhase('loading');
     setMessage('');
     setQr(null);
     try {
       const loginQr = await fetchLoginQr();
-      if (!mounted.current) return;
+      if (!mounted.current || session !== pollSession.current) return;
       setQr(loginQr);
-      setCountdown(loginQr.pollTimeoutSeconds);
+      setCountdown(Math.max(0, Math.ceil((loginQr.expiresAt - Date.now()) / 1000)));
       setPhase('waiting');
-      void beginPoll(loginQr);
+      void beginPoll(loginQr, session);
     } catch (e) {
       if (!mounted.current) return;
       setPhase('error');
@@ -51,29 +58,33 @@ export default function LoginView({ onLogin }: Props) {
     }
   };
 
-  /** 长轮询：后端挂起最多 45 秒，扫码确认瞬间返回；超时则在二维码有效期内自动续轮询。 */
-  const beginPoll = async (loginQr: LoginQr) => {
+  /** 长轮询：后端挂起最多 45 秒，扫码确认瞬间返回；超时/中断则在二维码有效期内自动续轮询。
+   *  关键：Android WebView 会主动 abort 长连接，不能用 signal.aborted 判断是否停止，
+   *  只能用 pollSession（主动刷新/卸载才变）控制，否则扫码后前端无反应。 */
+  const beginPoll = async (loginQr: LoginQr, session: number) => {
+    if (!mounted.current || session !== pollSession.current) return;
     const controller = new AbortController();
     pollAbort.current = controller;
-    setCountdown(loginQr.pollTimeoutSeconds);
+    setCountdown(Math.max(0, Math.ceil((loginQr.expiresAt - Date.now()) / 1000)));
     try {
       const result = await pollLogin(loginQr.ticket);
-      if (!mounted.current) return;
+      if (!mounted.current || session !== pollSession.current) return;
       setPhase('success');
       setMessage(`登录成功，学号 ${result.userId}`);
       window.setTimeout(() => {
-        if (mounted.current) onLogin(result.userId, result.mock);
+        if (mounted.current && session === pollSession.current) onLogin(result.userId, result.mock);
       }, 800);
-    } catch (e) {
-      if (!mounted.current || controller.signal.aborted) return;
-      // 超时（409）且二维码未过期 → 自动续轮询，用户有充足时间扫码
+    } catch {
+      // 无论超时、409 还是 WebView 中断的 fetch 错误：只要轮询会话仍有效且二维码未过期，就续轮询
+      if (!mounted.current || session !== pollSession.current) return;
       if (Date.now() < loginQr.expiresAt) {
-        setCountdown(loginQr.pollTimeoutSeconds);
-        void beginPoll(loginQr);
+        setCountdown(Math.max(0, Math.ceil((loginQr.expiresAt - Date.now()) / 1000)));
+        // 短暂延迟后重试，避免 WebView 网络抖动时疯狂打请求
+        window.setTimeout(() => void beginPoll(loginQr, session), 500);
         return;
       }
       setPhase('error');
-      setMessage(`二维码已过期或登录未完成：${(e as Error).message}`);
+      setMessage('二维码已过期，请点击刷新重新获取');
     }
   };
 

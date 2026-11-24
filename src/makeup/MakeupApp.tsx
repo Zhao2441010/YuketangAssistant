@@ -300,9 +300,8 @@ export default function MakeupApp() {
     showToast('已退出登录');
   };
 
-  const loadCourses = useCallback(async () => {
-    setLoadingCourses(true);
-    setError(null);
+  const loadCourses = useCallback(async (silent = false) => {
+    if (!silent) { setLoadingCourses(true); setError(null); }
     try {
       const data = await fetchCourses();
       setCourses(data.liveCourses);
@@ -314,13 +313,21 @@ export default function MakeupApp() {
         setLoggedIn(false);
         return;
       }
-      setError(`无法连接后端：${(e as Error).message}。请先启动 backend 服务（localhost:8080）。`);
+      // 静默轮询失败不打断用户，也不覆盖已有课程列表
+      if (!silent) setError(`无法连接后端：${(e as Error).message}。请确认后端服务可访问。`);
     } finally {
-      setLoadingCourses(false);
+      if (!silent) setLoadingCourses(false);
     }
   }, []);
 
   useEffect(() => { if (loggedIn) void loadCourses(); }, [loggedIn, loadCourses]);
+
+  // 每分钟自动询问一次上课状态（对齐小程序）
+  useEffect(() => {
+    if (!loggedIn) return;
+    const timer = window.setInterval(() => { void loadCourses(true); }, 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [loggedIn, loadCourses]);
 
   // 鉴权校验中
   if (authChecking) {
