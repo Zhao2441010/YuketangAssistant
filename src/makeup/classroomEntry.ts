@@ -1,5 +1,5 @@
 // 免扫码进课堂会话：调用 Android 原生插件注入官方域 Cookie 并在 App 内 WebView 打开固定入口。
-// Web 端无此插件（isNative=false），由调用方降级到 window.open 或同源反向代理。
+// 这是 APK「进入课堂」的默认路径；Web 端无此插件（isNative=false），由调用方降级到后端自渲染。
 import { registerPlugin } from '@capacitor/core';
 import { Capacitor } from '@capacitor/core';
 

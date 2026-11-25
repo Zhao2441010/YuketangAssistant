@@ -101,6 +101,12 @@ public class RealYktGateway implements YktGateway {
         JsonNode lessons = root.path("data").path("onLessonClassrooms");
         if (!lessons.isArray()) lessons = root.path("onLessonClassrooms");
         for (JsonNode n : lessons) {
+            // 记录原始字段名与 role/status，定位「onLessonClassrooms 是否混入非上课条目」
+            java.util.Set<String> fieldNames = new java.util.LinkedHashSet<>();
+            n.fieldNames().forEachRemaining(fieldNames::add);
+            log.info("onLessonClassroom 字段={} role={} status={} lessonId={}",
+                    fieldNames, n.path("role").asText("-"), n.path("status").asText("-"),
+                    text(n, "lessonId", "lesson_id", ""));
             result.add(new CourseInfo(
                     text(n, "lessonId", "lesson_id", ""),
                     text(n, "courseId", "course_id", ""),
@@ -155,6 +161,8 @@ public class RealYktGateway implements YktGateway {
                         ? (courseId.isEmpty() ? text(n, "course_id", "") : courseId) : classroomId;
                 // 课表无 status 字段：用 live 接口的 courseId/classroomId 判定是否正在上课
                 int status = liveIds.contains(courseId) || liveIds.contains(classroomId) ? 1 : 0;
+                // §14.4：university_id / classroom_id 是 lesson_info_v2 等课堂接口的必需身份头
+                String universityId = text(n.path("course"), "university_id", "universityId", "");
                 courses.add(new Course(
                         id,
                         text(n.path("course"), "name", "").isEmpty()
@@ -165,7 +173,9 @@ public class RealYktGateway implements YktGateway {
                         n.path("weekday").asInt(0),
                         status,
                         n.path("total_slides").asInt(0),
-                        n.path("current_slide").asInt(0)
+                        n.path("current_slide").asInt(0),
+                        universityId,
+                        classroomId
                 ));
             }
         }
@@ -177,11 +187,26 @@ public class RealYktGateway implements YktGateway {
     public Optional<CourseInfo> findLiveLesson(String sessionKey, String courseId) {
         // 优先用 v3 live 接口返回的真实 lessonId（课件题预览需要它）
         try {
+            // 课表里带 university_id / classroom_id，用于给 live 结果补齐身份头
+            String uniId = "", clsId = "";
+            try {
+                for (Course c : fetchCourseList(sessionKey).allCourses()) {
+                    if (c.courseId().equals(courseId) || c.classroomId().equals(courseId)) {
+                        uniId = c.universityId(); clsId = c.classroomId(); break;
+                    }
+                }
+            } catch (Exception ignored) { /* 课表失败不影响 live 匹配 */ }
+
             for (CourseInfo live : fetchLiveLessons(sessionKey)) {
                 boolean match = live.courseId().equals(courseId)
                         || live.classroomId().equals(courseId)
                         || (!live.lessonId().isBlank() && live.lessonId().equals(courseId));
-                if (match) return Optional.of(live);
+                if (match) {
+                    String u = live.universityId().isBlank() ? uniId : live.universityId();
+                    String c = live.classroomId().isBlank() ? clsId : live.classroomId();
+                    return Optional.of(new CourseInfo(live.lessonId(), live.courseId(),
+                            live.courseName(), live.status(), live.currentSlide(), c, u));
+                }
             }
         } catch (Exception e) {
             log.debug("live 接口查询 lessonId 失败: {}", e.getMessage());
@@ -190,7 +215,7 @@ public class RealYktGateway implements YktGateway {
                 .filter(c -> c.courseId().equals(courseId))
                 .findFirst()
                 .map(c -> new CourseInfo("lesson-" + c.courseId(), c.courseId(),
-                        c.name(), c.status(), c.currentSlide(), c.courseId()));
+                        c.name(), c.status(), c.currentSlide(), c.classroomId(), c.universityId()));
     }
 
     @Override

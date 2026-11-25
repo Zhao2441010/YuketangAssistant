@@ -32,6 +32,12 @@ public class ClassroomEntryPlugin extends Plugin {
             call.reject("缺少课堂入口 URL");
             return;
         }
+        String origin = domain.replaceAll("/+$", "");
+        // 只允许打开注入了 Cookie 的官方域，避免把登录态带去其他站点
+        if (!url.startsWith(origin + "/")) {
+            call.reject("课堂入口 URL 与官方域不匹配");
+            return;
+        }
         if (cookie == null || cookie.isEmpty()) {
             call.reject("缺少 L1 Cookie，请先登录");
             return;

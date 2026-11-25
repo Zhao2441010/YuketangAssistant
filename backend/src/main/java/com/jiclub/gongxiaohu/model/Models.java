@@ -22,8 +22,17 @@ public final class Models {
             int weekday,
             int status,          // 1 = 上课中, 0 = 未开课
             int totalSlides,
-            int currentSlide
-    ) {}
+            int currentSlide,
+            String universityId, // university-id 头（来自 course.university_id）
+            String classroomId   // classroom-id 头（课堂 id）
+    ) {
+        /** 兼容旧构造（无 universityId/classroomId）。 */
+        public Course(String courseId, String name, String teacher, String room,
+                      String timeRange, int weekday, int status, int totalSlides, int currentSlide) {
+            this(courseId, name, teacher, room, timeRange, weekday, status,
+                    totalSlides, currentSlide, "", "");
+        }
+    }
 
     /** 简化课表查询响应。 */
     public record CourseListResult(

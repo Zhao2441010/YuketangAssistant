@@ -6,7 +6,10 @@ import com.jiclub.gongxiaohu.model.ContentModels.Activity;
 import com.jiclub.gongxiaohu.model.ContentModels.Lesson;
 import com.jiclub.gongxiaohu.model.ContentModels.Presentation;
 import com.jiclub.gongxiaohu.model.ContentModels.Slide;
+import com.jiclub.gongxiaohu.model.CoursewareModels.CoursewareBundle;
+import com.jiclub.gongxiaohu.service.FullCoursewareService;
 import com.jiclub.gongxiaohu.service.SessionResolver;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -14,6 +17,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.io.IOException;
 import java.util.List;
 
 /** 课程中心：课程活动/课时列表、课件 PPT 页与教师题目。 */
@@ -22,10 +26,13 @@ import java.util.List;
 public class ContentController {
     private final ObjectProvider<YktContentApi> contentApi; // real 模式才有
     private final SessionResolver sessionResolver;
+    private final FullCoursewareService fullCoursewareService;
 
-    public ContentController(ObjectProvider<YktContentApi> contentApi, SessionResolver sessionResolver) {
+    public ContentController(ObjectProvider<YktContentApi> contentApi, SessionResolver sessionResolver,
+                             FullCoursewareService fullCoursewareService) {
         this.contentApi = contentApi;
         this.sessionResolver = sessionResolver;
+        this.fullCoursewareService = fullCoursewareService;
     }
 
     @GetMapping("/activities")
@@ -59,6 +66,36 @@ public class ContentController {
         YktContentApi api = contentApi.getIfAvailable();
         if (api == null) return ApiResponse.ok(mockPresentations(lessonId));
         return ApiResponse.ok(api.fetchPresentations(sessionKey, lessonId));
+    }
+
+    /**
+     * 全量课件：当前课程的全部课时（含尚未播放/尚未上课）与进行中课堂的全部页。
+     *
+     * <p>useJwt=true 时会对缺页课件尝试用 pptJwt 补全（触发 checkin，可能被动态码拦截），默认关闭。
+     */
+    @GetMapping("/course-all")
+    public ApiResponse<CoursewareBundle> courseAll(
+            @RequestParam String courseId,
+            @RequestParam(defaultValue = "false") boolean useJwt,
+            @RequestHeader(value = "X-Session-Token", required = false) String token,
+            @RequestHeader(value = "X-Session-Key", required = false) String legacyKey) {
+        sessionResolver.resolve(token, legacyKey); // 统一鉴权，错误码沿用现有会话体系
+        return ApiResponse.ok(fullCoursewareService.fetchAll(token, courseId, useJwt));
+    }
+
+    /** 把全部课件页打成 ZIP 下载（图片 + manifest.csv），不落盘、不回传任何凭据。 */
+    @GetMapping("/course-all.zip")
+    public void courseAllZip(
+            @RequestParam String courseId,
+            @RequestParam(defaultValue = "false") boolean useJwt,
+            @RequestHeader(value = "X-Session-Token", required = false) String token,
+            @RequestHeader(value = "X-Session-Key", required = false) String legacyKey,
+            HttpServletResponse response) throws IOException {
+        sessionResolver.resolve(token, legacyKey);
+        response.setContentType("application/zip");
+        response.setHeader("Content-Disposition",
+                "attachment; filename=\"courseware-" + courseId.replaceAll("[^A-Za-z0-9_-]", "_") + ".zip\"");
+        fullCoursewareService.writeZip(token, courseId, useJwt, response.getOutputStream());
     }
 
     // ============ mock 演示数据 ============

@@ -1,17 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ArrowLeft, BookOpen, Check, CheckCircle2, ChevronRight, Clock,
-  Layers, Loader2, LogOut, MapPin, Plus, RefreshCw, Send, User, Wifi, X
+  ArrowLeft, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Clock,
+  FileQuestion, Image as ImageIcon, Layers, Loader2, LogOut, MapPin, Maximize2, Minimize2,
+  Monitor, MousePointer2, Plus, RefreshCw, Send, Smartphone, User, Wifi, X
 } from 'lucide-react';
 import {
   Course, Quiz, SubmitResult, ClassroomView, DiagnosticReport, JoinLessonResult,
   checkSession, clearDiagnostics, clearToken, fetchClassroomRender, fetchCourses,
-  fetchDiagnostics, fetchEntryCookie, fetchInClassQuizzes, getToken, imageUrl, joinLesson,
+  fetchAllCourseware, fetchDiagnostics, fetchEntryCookie, fetchInClassQuizzes, getToken, imageUrl, joinLesson,
+  type LessonInfoProbe, probeLessonInfo, enterLesson, type LessonEnterResult,
   keepAlive, logout, saveDraft, submitInClassAnswer, uploadImage
 } from './api';
 import { isNativeApp, openOfficialClassroomSession } from './classroomEntry';
 import LoginView from './LoginView';
-import CourseCenter from './CourseCenter';
+import CourseCenter, { ProblemCard, parseProblem, type ProblemView } from './CourseCenter';
 
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 
@@ -257,6 +259,9 @@ export default function MakeupApp() {
   const [classroom, setClassroom] = useState<ClassroomView | null>(null);
   const [classroomJoin, setClassroomJoin] = useState<JoinLessonResult | null>(null);
   const [classroomLoading, setClassroomLoading] = useState(false);
+  // 免扫码进班：在读学生凭登录态建立官方课堂会话的结果（按课程缓存展示）
+  const [enterResult, setEnterResult] = useState<Record<string, LessonEnterResult>>({});
+  const [enteringId, setEnteringId] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -380,23 +385,61 @@ export default function MakeupApp() {
   };
 
   /**
-   * 后端自渲染（用户选定的主方案）：仅凭 L1 登录态由后端走 lesson-summary
-   * 拉课件与题目，前端自绘。全程不调用 checkin / pptJwt，不经过动态码。
-   *
-   * 原生端仍保留「用官方页打开」按钮（Cookie 注入 + App 内 WebView），
-   * 但不再是默认路径——放在自渲染课堂页里作为可选项。
+   * 进入课堂（技术说明 §7.2 ③）：原生端默认走官方在读学生固定入口 + 官方域 Cookie 注入
+   * + App 内 WebView，真正建立官方课堂会话（无 checkin / 动态码）。
+   * 打不开时降级为后端自渲染；Web 端无法注入官方域 Cookie，直接自渲染。
    */
   const openOfficialClassroom = async (course: Course) => {
     setClassroomLoading(true);
     try {
       const joined = await joinLesson(course.courseId, false);   // 不签到
+      if (isNativeApp) {
+        try {
+          const ck = await fetchEntryCookie();
+          await openOfficialClassroomSession({ url: joined.joinUrl, cookie: ck.cookie, domain: ck.domain });
+          return;
+        } catch (e) {
+          showToast(`官方课堂页打开失败，已降级为自渲染：${(e as Error).message}`);
+        }
+      }
       const view = await fetchClassroomRender(joined.entryId);    // 零签到自渲染
+      // 以历史课堂为目标：用全量课件覆盖实时渲染的少量页，未播放页也能翻到
+      try {
+        const full = await fetchAllCourseware(course.courseId, false);
+        const chosen = full.lessons.find(l => l.activityId.startsWith('LIVE-')) ?? full.lessons[0];
+        if (chosen?.presentations.length && chosen.presentations.some(p => p.slides.length > 0)) {
+          view.presentations = chosen.presentations.map(p => ({
+            id: p.id, title: p.title, cover: '', slidesCount: p.declaredCount,
+            slides: p.slides.map(s => ({
+              id: `p-${s.page}`, page: s.page, cover: s.imageUrl, problem: s.problem
+            }))
+          }));
+          view.hint = `${view.hint} · 已按历史课堂方式载入全量课件：${chosen.title}，共 ${chosen.fetchedSlides} 页（含未播放）`
+            + (chosen.warning ? `；${chosen.warning}` : '');
+        }
+      } catch (e) {
+        view.hint = `${view.hint} · 全量课件暂不可用：${(e as Error).message}`;
+      }
       setClassroomJoin(joined);
       setClassroom(view);
     } catch (e) {
       showToast(`进入课堂失败：${(e as Error).message}`);
     } finally {
       setClassroomLoading(false);
+    }
+  };
+
+  /** 免扫码进班：在读学生凭登录态直接建立官方课堂会话（lesson_info_v2 → userAuth → WSS hello）。 */
+  const enterClassroom = async (course: Course) => {
+    setEnteringId(course.courseId);
+    try {
+      const result = await enterLesson(course.courseId);
+      setEnterResult(prev => ({ ...prev, [course.courseId]: result }));
+      showToast(result.entered ? '已免扫码进入课堂会话' : (result.note || '免扫码进班未成功'));
+    } catch (e) {
+      showToast(`免扫码进班失败：${(e as Error).message}`);
+    } finally {
+      setEnteringId(null);
     }
   };
 
@@ -448,6 +491,7 @@ export default function MakeupApp() {
       <SelfRenderedClassroom
         view={classroom}
         join={classroomJoin}
+        courses={allCourses}
         showToast={showToast}
         onBack={() => { setClassroom(null); setClassroomJoin(null); }}
       />
@@ -534,14 +578,35 @@ export default function MakeupApp() {
                     进入补答 <ChevronRight className="w-4 h-4" />
                   </button>
                   <button
+                    onClick={() => void enterClassroom(course)}
+                    disabled={enteringId === course.courseId}
+                    title="在读学生凭登录态直接建立官方课堂会话（lesson_info_v2 → userAuth → WSS hello，无需扫码）"
+                    className="px-4 py-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold hover:bg-emerald-100 active:scale-[0.99] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    {enteringId === course.courseId ? <Loader2 className="w-4 h-4 animate-spin" /> : '免扫码进班'}
+                  </button>
+                  <button
                     onClick={() => void openOfficialClassroom(course)}
                     disabled={classroomLoading}
-                    title="后端换取课堂凭证并自渲染课件与题目（无需官方页 Cookie）"
+                    title={isNativeApp
+                      ? '以在读学生身份进入官方课堂会话（App 内 WebView 注入 Cookie，无需扫码）'
+                      : '读取课件与题目并自绘（Web 端无法注入官方域 Cookie）'}
                     className="px-4 py-3 rounded-2xl bg-white border border-[#007AFF]/30 text-[#007AFF] text-sm font-semibold hover:bg-[#007AFF]/5 active:scale-[0.99] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
                   >
                     {classroomLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : '进入课堂'}
                   </button>
                 </div>
+                {enterResult[course.courseId] && (
+                  <div className={`rounded-2xl px-4 py-3 text-xs leading-relaxed border ${
+                    enterResult[course.courseId].entered
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                      : 'bg-amber-50 border-amber-200 text-amber-800'
+                  }`}>
+                    {enterResult[course.courseId].entered
+                      ? <span className="flex items-center gap-1.5"><CheckCircle2 className="w-4 h-4" />{enterResult[course.courseId].note}</span>
+                      : <span>{enterResult[course.courseId].note}</span>}
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -609,16 +674,115 @@ export default function MakeupApp() {
 const SelfRenderedClassroom: React.FC<{
   view: ClassroomView;
   join: JoinLessonResult | null;
+  courses: Course[];
   showToast: (msg: string) => void;
   onBack: () => void;
-}> = ({ view, join, showToast, onBack }) => {
+}> = ({ view, join, courses, showToast, onBack }) => {
   const [presIdx, setPresIdx] = React.useState(0);
   const [slideIdx, setSlideIdx] = React.useState(0);
   const [diagOpen, setDiagOpen] = React.useState(false);
   const [diag, setDiag] = React.useState<DiagnosticReport | null>(null);
   const [diagErr, setDiagErr] = React.useState('');
+  const [probe, setProbe] = React.useState<LessonInfoProbe | null>(null);
+  const [probeCourseId, setProbeCourseId] = React.useState('');
+  const [probeErr, setProbeErr] = React.useState('');
+  const [probing, setProbing] = React.useState(false);
+  const runProbe = async (courseId: string) => {
+    setProbing(true); setProbeErr(''); setProbe(null);
+    try { setProbe(await probeLessonInfo(courseId)); }
+    catch (e) { setProbeErr((e as Error).message); }
+    finally { setProbing(false); }
+  };
   const pres = view.presentations[presIdx];
   const slide = pres?.slides[slideIdx];
+
+  // ===== 与历史课堂页一致的课件浏览能力（全屏/横竖屏/缩放/滚轮翻页/题目置顶）=====
+  const [fullscreen, setFullscreen] = React.useState(false);
+  const [landscape, setLandscape] = React.useState(false);
+  const [zoom, setZoom] = React.useState(1);
+  const [offset, setOffset] = React.useState({ x: 0, y: 0 });
+  const [showProblems, setShowProblems] = React.useState(true);
+  const [pageInput, setPageInput] = React.useState('');
+  const pageInputFocused = React.useRef(false);
+  const wheelLock = React.useRef(0);
+  const pinch = React.useRef<{ dist: number; cx: number; cy: number; zoom: number; ox: number; oy: number } | null>(null);
+  const lastTap = React.useRef(0);
+  const slideThumbRef = React.useRef<HTMLDivElement | null>(null);
+  const pptViewportRef = React.useRef<HTMLDivElement | null>(null);
+  const slideCount = pres?.slides.length ?? 0;
+
+  const quizItems: { presIdx: number; slideIdx: number; page: number; presTitle: string; problem: string }[] = [];
+  view.presentations.forEach((p, pi) => p.slides.forEach((s, si) => {
+    if (s.problem) quizItems.push({
+      presIdx: pi, slideIdx: si, page: s.page, presTitle: p.title, problem: s.problem
+    });
+  }));
+
+  const resetView = () => { setZoom(1); setOffset({ x: 0, y: 0 }); };
+  const toggleFullscreen = () => { setFullscreen(v => !v); resetView(); };
+  const gotoSlide = (i: number) => {
+    setSlideIdx(i); resetView();
+    const el = slideThumbRef.current;
+    const child = el?.children[i] as HTMLElement | undefined;
+    if (child) child.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  };
+  const jumpTo = (pi: number, si: number) => { setPresIdx(pi); gotoSlide(si); };
+  const goToPage = () => {
+    const target = Number(pageInput);
+    if (!Number.isFinite(target) || !pres) { pageInputFocused.current = false; return; }
+    const idx = pres.slides.findIndex(s => s.page === target);
+    if (idx >= 0) gotoSlide(idx);
+    else if (target >= 1 && target <= pres.slides.length) gotoSlide(target - 1);
+    pageInputFocused.current = false;
+  };
+  React.useEffect(() => {
+    if (!pageInputFocused.current) setPageInput(String(slide?.page ?? ''));
+  }, [slide?.page]);
+  React.useEffect(() => {
+    const el = pptViewportRef.current;
+    if (!el || slideCount < 2) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const now = Date.now();
+      if (now - wheelLock.current < 260 || Math.abs(e.deltaY) < 8) return;
+      wheelLock.current = now;
+      setSlideIdx(i => Math.max(0, Math.min(slideCount - 1, i + (e.deltaY > 0 ? 1 : -1))));
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, [slideCount, fullscreen]);
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const a = e.touches[0], b = e.touches[1];
+      pinch.current = {
+        dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+        cx: (a.clientX + b.clientX) / 2, cy: (a.clientY + b.clientY) / 2,
+        zoom, ox: offset.x, oy: offset.y
+      };
+    }
+  };
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinch.current) {
+      const a = e.touches[0], b = e.touches[1];
+      const ratio = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) / (pinch.current.dist || 1);
+      let z = Math.max(1, Math.min(4, pinch.current.zoom * ratio));
+      let ox = pinch.current.ox + ((a.clientX + b.clientX) / 2 - pinch.current.cx);
+      let oy = pinch.current.oy + ((a.clientY + b.clientY) / 2 - pinch.current.cy);
+      if (z <= 1) { ox = 0; oy = 0; }
+      setZoom(z); setOffset({ x: ox, y: oy });
+    }
+  };
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) {
+      pinch.current = null;
+      if (zoom <= 1.01 && (offset.x || offset.y)) resetView();
+    }
+  };
+  const onPptTap = () => {
+    const now = Date.now();
+    if (now - lastTap.current < 350) { lastTap.current = 0; toggleFullscreen(); }
+    else lastTap.current = now;
+  };
 
   const loadDiag = async () => {
     setDiagErr('');
@@ -651,48 +815,157 @@ const SelfRenderedClassroom: React.FC<{
           <span>{view.hint}</span>
         </div>
 
-        {/* 课件切换 + PPT 主图 + 缩略图 */}
-        {view.presentations.length > 0 && (
-          <section className="space-y-3">
-            <div className="flex gap-2 overflow-x-auto">
-              {view.presentations.map((p, i) => (
-                <button key={p.id || i} onClick={() => { setPresIdx(i); setSlideIdx(0); }}
-                  className={`shrink-0 px-3 py-1.5 rounded-xl text-xs font-medium ${
-                    i === presIdx ? 'bg-[#007AFF] text-white' : 'bg-white border border-black/[0.06]'}`}>
-                  {p.title}（{p.slidesCount}页）
-                </button>
-              ))}
-            </div>
-            {slide && (
-              <div className="bg-white rounded-3xl border border-black/[0.06] overflow-hidden">
-                <div className="bg-slate-50 flex items-center justify-center min-h-[280px]">
-                  {slide.cover
-                    ? <img src={slide.cover} alt={`第${slide.page}页`} className="w-full max-h-[60vh] object-contain" referrerPolicy="no-referrer" />
-                    : <span className="text-xs text-[#AEAEB2]">该页暂无图片</span>}
+        {/* ===== 测验区：与历史课堂一致，课件内嵌题目置顶且可跳页 ===== */}
+        {quizItems.length > 0 && !fullscreen && (
+          <section className="bg-white rounded-3xl border border-orange-100 overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.02)] mb-4">
+            <button onClick={() => setShowProblems(v => !v)}
+              className="w-full px-4 py-3 flex items-center justify-between bg-orange-50/70 hover:bg-orange-50 transition-colors">
+              <div className="flex items-center gap-2">
+                <span className="w-7 h-7 rounded-xl bg-orange-100 flex items-center justify-center">
+                  <FileQuestion className="w-4 h-4 text-orange-600" />
+                </span>
+                <div className="text-left">
+                  <h2 className="text-sm font-bold text-[#1C1C1E]">教师题目 · 测验区</h2>
+                  <p className="text-[10px] text-orange-600">共 {quizItems.length} 道 · 点击题目跳转对应课件页</p>
                 </div>
-                <div className="flex gap-2 overflow-x-auto p-3">
-                  {pres?.slides.map((s, i) => (
-                    <button key={s.id || i} onClick={() => setSlideIdx(i)}
-                      className={`shrink-0 w-[88px] rounded-lg overflow-hidden border-2 relative ${
-                        i === slideIdx ? 'border-[#007AFF]' : 'border-transparent'}`}>
-                      {s.cover
-                        ? <img src={s.cover} className="w-full h-[50px] object-cover" referrerPolicy="no-referrer" alt={`P${s.page}`} />
-                        : <div className="w-full h-[50px] bg-slate-100" />}
-                      <span className="absolute bottom-0 left-0 right-0 bg-black/55 text-white text-[9px] text-center">{s.page}</span>
+              </div>
+              <ChevronDown className={`w-4 h-4 text-orange-500 transition-transform ${showProblems ? '' : '-rotate-90'}`} />
+            </button>
+            {showProblems && (
+              <div className="p-3 space-y-2.5 max-h-[420px] overflow-y-auto">
+                {quizItems.map((q, i) => {
+                  const pv: ProblemView | null = parseProblem(q.problem);
+                  const active = q.presIdx === presIdx && q.slideIdx === slideIdx;
+                  return (
+                    <button key={i} onClick={() => jumpTo(q.presIdx, q.slideIdx)}
+                      className={`w-full text-left rounded-2xl border p-3 transition-all ${
+                        active ? 'border-orange-300 bg-orange-50/40' : 'border-black/[0.06] hover:bg-gray-50'}`}>
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-[10px] font-semibold">
+                          题 {i + 1}
+                        </span>
+                        <span className="text-[10px] text-[#8E8E93]">{q.presTitle} · P{q.page}</span>
+                      </div>
+                      {pv && <ProblemCard problem={pv} compact />}
                     </button>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             )}
           </section>
         )}
 
-        {/* 题目：后端持 pptJwt 拉取，前端自绘 */}
-        <section className="space-y-2">
-          <h2 className="text-sm font-bold px-1">课堂题目（{view.quizzes.length}）</h2>
-          {view.quizzes.length === 0
-            ? <div className="bg-white rounded-2xl p-6 text-center text-xs text-[#8E8E93]">该节课暂无已下发题目</div>
-            : view.quizzes.map(q => (
+        {/* ===== 课件区：与历史课堂同款切换栏 + 全屏舞台 + 下方缩略图 ===== */}
+        <div className={`flex items-center justify-between gap-2 mb-3 flex-wrap ${fullscreen ? 'hidden' : ''}`}>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {view.presentations.map((p, i) => (
+              <button key={p.id || i} onClick={() => { setPresIdx(i); gotoSlide(0); }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all ${
+                  i === presIdx ? 'bg-[#007AFF] text-white' : 'bg-white text-[#3A3A3C] border border-black/[0.06]'}`}>
+                <Layers className="w-3.5 h-3.5" /> {p.title} ({p.slidesCount}页)
+              </button>
+            ))}
+          </div>
+          <span className="text-[10px] text-[#8E8E93] flex items-center gap-1">
+            <MousePointer2 className="w-3 h-3" /> 滑动/滚轮翻页 · 双击全屏
+          </span>
+        </div>
+
+        {pres && slide ? (
+          <>
+            {fullscreen && <div className="fixed inset-0 bg-black z-[1000]" />}
+            <div className={`${fullscreen ? 'fixed z-[1001] bg-black' : 'bg-white rounded-3xl border border-black/[0.06] overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.02)]'} ${
+              fullscreen ? 'inset-0 flex items-center justify-center' : ''}`}>
+              <div className={`flex flex-col w-full ${fullscreen ? 'h-full' : ''} ${
+                landscape && fullscreen ? 'rotate-90 origin-center' : ''}`}
+                style={fullscreen && landscape
+                  ? { width: '100vh', height: '100vw', transform: 'rotate(90deg) translate(50%, -50%)', position: 'absolute', top: '50%', left: '50%' }
+                  : undefined}>
+                <div className={`flex items-center gap-2 ${fullscreen ? 'absolute top-3 right-3 z-20' : 'justify-end p-2'}`}>
+                  <button onClick={toggleFullscreen}
+                    className={`w-10 h-10 rounded-full flex items-center justify-center ${fullscreen ? 'bg-black/50 text-white' : 'bg-[#007AFF] text-white'}`}
+                    title={fullscreen ? '退出全屏' : '全屏'}>
+                    {fullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+                  </button>
+                  {fullscreen && (
+                    <button onClick={() => setLandscape(v => !v)}
+                      className="w-10 h-10 rounded-full flex items-center justify-center bg-black/50 text-white"
+                      title={landscape ? '竖屏' : '横屏'}>
+                      {landscape ? <Smartphone className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
+                    </button>
+                  )}
+                </div>
+
+                <div ref={pptViewportRef}
+                  onClick={onPptTap}
+                  onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+                  className={`w-full bg-slate-50 flex items-center justify-center overflow-hidden select-none ${fullscreen ? 'flex-1' : 'min-h-[300px] cursor-ns-resize'}`}>
+                  {slide.cover ? (
+                    <img src={slide.cover} alt={`第 ${slide.page} 页`}
+                      className="w-full h-auto object-contain max-h-[70vh] pointer-events-none"
+                      style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: 'center center' }}
+                      referrerPolicy="no-referrer" />
+                  ) : (
+                    <div className="flex flex-col items-center gap-2 text-[#AEAEB2] py-16">
+                      <Maximize2 className="w-10 h-10" />
+                      <span className="text-xs">该页暂无图片（可能尚未同步），可翻到其他页</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className={`px-4 py-2.5 flex items-center justify-between gap-2 ${
+                  fullscreen ? 'bg-black/55 absolute bottom-0 left-0 right-0 text-white' : 'border-t border-black/[0.06] bg-[#FAFAFA]'}`}>
+                  <button onClick={() => gotoSlide(Math.max(0, slideIdx - 1))} disabled={slideIdx === 0}
+                    className="px-3 py-1.5 rounded-xl bg-white/90 border border-black/[0.06] text-xs disabled:opacity-40 text-[#1C1C1E]">
+                    ‹ 上一页
+                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <input type="number" value={pageInput}
+                      onFocus={() => { pageInputFocused.current = true; }}
+                      onChange={e => setPageInput(e.target.value)}
+                      onBlur={() => { goToPage(); }}
+                      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                      className="w-14 text-center text-xs rounded-lg border border-black/10 bg-white/90 text-[#1C1C1E] px-1 py-1" />
+                    <span className="text-xs opacity-80">/ {pres.slides.length} 页</span>
+                  </div>
+                  <button onClick={() => gotoSlide(Math.min(pres.slides.length - 1, slideIdx + 1))}
+                    disabled={slideIdx >= pres.slides.length - 1}
+                    className="px-3 py-1.5 rounded-xl bg-white/90 border border-black/[0.06] text-xs disabled:opacity-40 text-[#1C1C1E]">
+                    下一页 ›
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {!fullscreen && (
+              <div ref={slideThumbRef} className="flex gap-2 overflow-x-auto mt-3 pb-2 px-1">
+                {pres.slides.map((s, i) => (
+                  <button key={s.id || i} onClick={() => gotoSlide(i)}
+                    className={`shrink-0 w-[100px] rounded-lg overflow-hidden border-2 transition-all relative ${
+                      i === slideIdx ? 'border-[#007AFF]' : 'border-transparent hover:border-[#C7C7CC]'}`}>
+                    {s.cover ? (
+                      <img src={s.cover} alt={`P${s.page}`} className="w-full h-[56px] object-cover bg-white" loading="lazy" referrerPolicy="no-referrer" />
+                    ) : (
+                      <div className="w-full h-[56px] bg-slate-100 flex items-center justify-center">
+                        <ImageIcon className="w-4 h-4 text-[#C7C7CC]" />
+                      </div>
+                    )}
+                    <span className="absolute bottom-0 left-0 right-0 bg-black/55 text-white text-[9px] py-0.5 text-center">{s.page}</span>
+                    {s.problem && <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-orange-500" title="含题目" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="bg-white rounded-3xl p-10 text-center text-sm text-[#8E8E93]">该课件暂无页面</div>
+        )}
+
+        {/* 实时随堂题（后端接口下发，非课件内嵌题） */}
+        {view.quizzes.length > 0 && (
+          <section className="space-y-2">
+            <h2 className="text-sm font-bold px-1">实时随堂题（{view.quizzes.length}）</h2>
+            {view.quizzes.map(q => (
               <div key={q.quizId} className="bg-white rounded-2xl border border-black/[0.06] p-4 space-y-2">
                 <div className="flex items-center gap-2">
                   <span className="px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-[10px] font-semibold">{q.type}</span>
@@ -708,7 +981,8 @@ const SelfRenderedClassroom: React.FC<{
                 )}
               </div>
             ))}
-        </section>
+          </section>
+        )}
 
         {/* 验证诊断（§6.7）：真实开课时展开即可看到 checkin 全套证据，无需抓包 */}
         <section className="bg-white rounded-2xl border border-black/[0.06] overflow-hidden">
@@ -732,6 +1006,35 @@ const SelfRenderedClassroom: React.FC<{
                 </div>
               </div>
               {diagErr && <p className="text-[11px] text-red-600">{diagErr}</p>}
+              <div className="bg-[#F2F2F7] rounded-xl p-3 space-y-1.5">
+                <p className="text-[11px] font-semibold text-[#1C1C1E]">进班探测 · lesson_info_v2（官方课堂页自己发的请求）</p>
+                <p className="text-[10px] text-[#3A3A3C] leading-relaxed">
+                  在真实开课时选一门课探测。只读，不调用 checkin，返回业务码与字段有无，不含任何凭据。
+                </p>
+                <select
+                  className="w-full text-[11px] rounded-lg border border-black/[0.08] bg-white px-2 py-1.5"
+                  value={probeCourseId}
+                  onChange={e => setProbeCourseId(e.target.value)}>
+                  <option value="">选择课程…</option>
+                  {(courses ?? []).map(c => (
+                    <option key={c.courseId} value={c.courseId}>{c.name}</option>
+                  ))}
+                </select>
+                <button onClick={() => void runProbe(probeCourseId)} disabled={!probeCourseId || probing}
+                  className="w-full py-2 rounded-xl bg-[#007AFF] text-white text-[11px] font-semibold disabled:opacity-40">
+                  {probing ? '探测中…' : '开始探测'}
+                </button>
+                {probeErr && <p className="text-[11px] text-red-600">{probeErr}</p>}
+                {probe && (
+                  <div className="text-[11px] space-y-0.5">
+                    <p>HTTP {probe.httpStatus} · code {probe.code}{probe.msg ? ` · ${probe.msg}` : ''}</p>
+                    <p>课堂凭据 userAuth：<b className={probe.hasUserAuth ? 'text-emerald-600' : 'text-amber-600'}>
+                      {probe.hasUserAuth ? '已返回' : '无'}</b></p>
+                    <p>课件 {probe.presentationCount} 个 · 题目 {probe.quizCount} 道</p>
+                    <p className="text-[#3A3A3C]">{probe.note}</p>
+                  </div>
+                )}
+              </div>
               {diag && diag.totalAttempts === 0 && (
                 <p className="text-[11px] text-[#8E8E93] leading-relaxed">
                   自渲染主方案不调用 checkin，因此没有诊断记录是正常且符合预期的。
@@ -789,7 +1092,7 @@ const SelfRenderedClassroom: React.FC<{
           )}
         </section>
 
-        {/* 可选项：在读学生固定入口（无 sign/ts/动态码），需官方域 Cookie */}
+        {/* 降级后仍可重试：在读学生固定入口（无 sign/ts/动态码），需官方域 Cookie */}
         {join?.joinUrl && (
           <>
             {isNativeApp && (
@@ -802,7 +1105,7 @@ const SelfRenderedClassroom: React.FC<{
                 } catch (e) { showToast(`打开官方课堂失败：${(e as Error).message}`); }
               }}
                 className="w-full py-3 rounded-2xl bg-[#007AFF] text-white text-xs font-semibold">
-                用官方课堂页打开（App 内 WebView 注入 Cookie）
+                重试官方课堂页（App 内 WebView 注入 Cookie）
               </button>
             )}
             <button onClick={() => window.open(join.joinUrl, '_blank', 'noopener,noreferrer')}

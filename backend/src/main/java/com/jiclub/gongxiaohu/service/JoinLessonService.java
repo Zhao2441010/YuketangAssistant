@@ -81,6 +81,12 @@ public class JoinLessonService {
         return gateway.fetchCourseList(sessionKey);
     }
 
+    public YktGateway.CourseInfo findLiveLesson(String sessionKey, String courseId) {
+        return gateway.findLiveLesson(sessionKey, courseId)
+                .orElseThrow(() -> BizException.conflict(
+                        "课程 " + courseId + " 当前未开课，无法进班"));
+    }
+
     /**
      * 主动进课堂（用户点击触发）：默认<b>不调用 checkin</b>，只做开课发现 + 返回固定入口。
      * 这是博客「免扫码秒进班」的正确链路，不受动态码约束。
@@ -104,9 +110,7 @@ public class JoinLessonService {
         // ctx 的 sessionId 可能与 request.sessionKey() 不同（导入 Cookie 时），以 ctx 为准
         if (ctx.sessionId().isBlank()) ctx = SessionContext.minimal(sessionKey);
 
-        YktGateway.CourseInfo lesson = gateway.findLiveLesson(sessionKey, request.courseId())
-                .orElseThrow(() -> BizException.conflict(
-                        "课程 " + request.courseId() + " 当前未开课，无法进班"));
+        YktGateway.CourseInfo lesson = findLiveLesson(sessionKey, request.courseId());
 
         long now = Instant.now().getEpochSecond();
         long ttl = properties.joinSignature() == null ? 300

@@ -127,6 +127,57 @@ public class YktInClassQuizApi {
         return result;
     }
 
+    /**
+     * 用 pptJwt 拉整份课件的全部页（含老师还没翻到的页）。
+     *
+     * <p>与 {@code fetchProblems} 共用同一条官方接口，但返回的是完整页列表而不是只抽题目。
+     * 调用方只应在「lesson-summary 声明的 slidesCount 大于实际返回页数」时启用：
+     * 换取 pptJwt 需要 checkin，可能被动态码拦截，不能默认走这条。
+     *
+     * @return 页列表；接口不可用时返回空列表（不抛异常，由调用方降级）
+     */
+    public java.util.List<com.jiclub.gongxiaohu.model.ContentModels.Slide> fetchFullSlides(
+            String sessionId, String pptJwt, String presentationId) {
+        java.util.List<com.jiclub.gongxiaohu.model.ContentModels.Slide> out = new java.util.ArrayList<>();
+        if (pptJwt == null || pptJwt.isBlank() || presentationId == null || presentationId.isBlank()) return out;
+        try {
+            String url = baseUrl + "/api/v3/lesson/presentation/fetch?presentation_id="
+                    + URLEncoder.encode(presentationId, StandardCharsets.UTF_8);
+            HttpResponse<String> resp = http.send(
+                    HttpRequest.newBuilder(URI.create(url))
+                            .header("User-Agent", UA)
+                            .header("Accept", "application/json, text/plain, */*")
+                            .header("Cookie", "sessionid=" + sessionId)
+                            .header("Authorization", "Bearer " + pptJwt)
+                            .GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            JsonNode root = mapper.readTree(resp.body());
+            if (resp.statusCode() != 200 || root.path("code").asInt(0) != 0) {
+                log.info("presentation/fetch 拉整份课件不可用 pid={} http={} code={}",
+                        presentationId, resp.statusCode(), root.path("code").asInt(0));
+                return out;
+            }
+            JsonNode slides = root.path("data").path("slides");
+            if (!slides.isArray()) return out;
+            int i = 0;
+            for (JsonNode s : slides) {
+                i++;
+                JsonNode problem = s.get("problem");
+                String problemJson = (problem != null && problem.isObject() && !problem.isEmpty())
+                        ? mapper.writeValueAsString(problem) : null;
+                out.add(new com.jiclub.gongxiaohu.model.ContentModels.Slide(
+                        text(s, "id"),
+                        s.path("index").asInt(i),
+                        text(s, "cover", "coverAlt", "image_url"),
+                        problemJson));
+            }
+            log.info("presentation/fetch 拉整份课件成功 pid={} 页数={}", presentationId, out.size());
+        } catch (Exception e) {
+            log.warn("presentation/fetch 拉整份课件异常 pid={}: {}", presentationId, e.getMessage());
+        }
+        return out;
+    }
+
     /** fallback：用 lesson-summary/student/presentation 拉题（无需 jwt，coursewareId 作 lesson_id）。 */
     private List<RawProblem> fetchProblemsViaSummary(String sessionId, String lessonId, String presentationId) {
         List<RawProblem> result = new ArrayList<>();

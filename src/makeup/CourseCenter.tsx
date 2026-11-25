@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft, BookOpen, CheckCircle2, ChevronDown, ChevronRight,
-  Clock, FileQuestion, Image as ImageIcon, Layers, Loader2, Maximize2, Minimize2,
+  Clock, Download, FileQuestion, Image as ImageIcon, Layers, Loader2, Maximize2, Minimize2,
   MousePointer2, Presentation as PresentationIcon, Smartphone, Monitor
 } from 'lucide-react';
 import {
-  Activity, Course, Presentation, Slide, fetchActivities, fetchSlides
+  Activity, Course, Presentation, Slide, CoursewareBundle, CoursewareLesson,
+  fetchActivities, fetchSlides, fetchAllCourseware, downloadCoursewareZip
 } from './api';
 
 interface Props {
@@ -13,7 +14,7 @@ interface Props {
   onBack: () => void;
 }
 
-type ProblemView = {
+export type ProblemView = {
   body?: string;
   type?: string;
   problemType?: number;
@@ -23,9 +24,23 @@ type ProblemView = {
   content?: ProblemView;   // 真实结构：题目正文嵌在 content 里
 };
 
+/** 解析课件页里的 problem JSON；真实历史课件把正文放在 content 里。 */
+export function parseProblem(raw: string | null): ProblemView | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as ProblemView;
+    return parsed.content
+      ? { ...parsed.content, problemType: parsed.content.problemType ?? parsed.problemType }
+      : parsed;
+  } catch { return { body: raw }; }
+}
+
 /** 课程中心：全部课程 → 课程课时列表 → 课件 PPT 翻页 + 教师题目。 */
 export default function CourseCenter({ courses, onBack }: Props) {
-  const [view, setView] = useState<'courses' | 'activities' | 'slides'>('courses');
+  const [view, setView] = useState<'courses' | 'activities' | 'slides' | 'all'>('courses');
+  const [bundle, setBundle] = useState<CoursewareBundle | null>(null);
+  const [allLoading, setAllLoading] = useState(false);
+  const [allUseJwt, setAllUseJwt] = useState(false);
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
   const [selectedLesson, setSelectedLesson] = useState<Activity | null>(null);
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -120,7 +135,35 @@ export default function CourseCenter({ courses, onBack }: Props) {
     } finally { setLoading(false); }
   };
 
-  const backTo = (target: 'courses' | 'activities') => {
+  /** 抓取整门课的全部课件：包括尚未播放的课时与进行中课堂未放映的页。 */
+  const grabAll = async (useJwt = false) => {
+    if (!selectedCourse) return;
+    setView('all');
+    setAllLoading(true); setError(null); setAllUseJwt(useJwt);
+    try {
+      setBundle(await fetchAllCourseware(selectedCourse.courseId, useJwt));
+    } catch (e) {
+      setError((e as Error).message);
+      setBundle(null);
+    } finally { setAllLoading(false); }
+  };
+
+  /** 从全量结果里打开某个课时，复用现有课件翻页视图。 */
+  const openFromBundle = (l: CoursewareLesson) => {
+    setSelectedLesson({
+      activityId: l.activityId, coursewareId: l.coursewareId, title: l.title,
+      type: 14, typeName: '课件', createTime: 0, finished: l.finished, attended: l.attended
+    });
+    setPresentations(l.presentations.map(p => ({
+      id: p.id, title: p.title, cover: '', slidesCount: p.declaredCount,
+      slides: p.slides.map(s => ({
+        id: `p-${s.page}`, page: s.page, cover: s.imageUrl, problem: s.problem
+      }))
+    })));
+    setPresIndex(0); setSlideIndex(0); setError(null); setView('slides');
+  };
+
+  const backTo = (target: 'courses' | 'activities' | 'all') => {
     setError(null);
     setView(target);
   };
@@ -180,15 +223,6 @@ export default function CourseCenter({ courses, onBack }: Props) {
     pageInputFocused.current = false;
   };
 
-  const parseProblem = (raw: string | null): ProblemView | null => {
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw) as ProblemView;
-      // 真实历史课件：problem.content 才是题目正文（含 body/options/answer）
-      return parsed.content ? { ...parsed.content, problemType: parsed.content.problemType ?? parsed.problemType } : parsed;
-    } catch { return { body: raw }; }
-  };
-
   // ============ 视图 1：全部课程 ============
   if (view === 'courses') {
     return (
@@ -225,6 +259,10 @@ export default function CourseCenter({ courses, onBack }: Props) {
         <Header title={selectedCourse?.name ?? '课程'} subtitle="选择课时查看课件与题目" onBack={() => backTo('courses')} />
         <main className="max-w-3xl mx-auto px-5 py-6 space-y-3">
           {error && <ErrorBox message={error} onRetry={() => selectedCourse && void enterCourse(selectedCourse)} />}
+          <button onClick={() => void grabAll(false)}
+            className="w-full py-3 rounded-2xl bg-[#007AFF] text-white text-sm font-bold flex items-center justify-center gap-2 active:scale-[0.99] transition-all">
+            <Layers className="w-4 h-4" /> 抓取全部 PPT（含未播放）
+          </button>
           {loading ? (
             <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-[#007AFF]" /></div>
           ) : activities.length === 0 && !error ? (
@@ -248,6 +286,75 @@ export default function CourseCenter({ courses, onBack }: Props) {
               <ChevronRight className="w-4 h-4 text-[#C7C7CC] shrink-0" />
             </button>
           ))}
+        </main>
+      </div>
+    );
+  }
+
+  // ============ 视图 2.5：整门课全量课件 ============
+  if (view === 'all') {
+    return (
+      <div className="min-h-screen bg-[#F2F2F7] text-[#1C1C1E]">
+        <Header title="全部课件" subtitle="含尚未播放的课时与未放映的页" onBack={() => backTo('activities')} />
+        <main className="max-w-3xl mx-auto px-5 py-6 space-y-3">
+          {error && <ErrorBox message={error} onRetry={() => void grabAll(allUseJwt)} />}
+          {allLoading ? (
+            <div className="flex flex-col items-center gap-2 py-16 text-sm text-[#8E8E93]">
+              <Loader2 className="w-6 h-6 animate-spin text-[#007AFF]" /> 正在抓取整门课的课件…
+            </div>
+          ) : bundle ? (
+            <>
+              <div className="bg-white rounded-3xl border border-black/[0.06] p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-bold">共 {bundle.lessonCount} 个课时 · {bundle.presentationCount} 份课件</span>
+                  <span className={`text-[11px] px-2 py-0.5 rounded-full ${bundle.complete
+                    ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                    {bundle.complete ? '全部页已获取' : `缺 ${bundle.missingPageCount} 页`}
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#8E8E93]">实际拿到 {bundle.slideCount} 页，包括尚未播放的课时</p>
+                <div className="flex gap-2 pt-1">
+                  <button onClick={() => void grabAll(!allUseJwt)}
+                    className="flex-1 py-2 rounded-xl bg-[#F2F2F7] text-xs font-semibold">
+                    {allUseJwt ? '不用课堂凭证，重新抓取' : '用课堂凭证补全缺页'}
+                  </button>
+                  <button onClick={() => void downloadCoursewareZip(bundle.courseId, allUseJwt).catch(e => setError((e as Error).message))}
+                    className="flex-1 py-2 rounded-xl bg-[#007AFF] text-white text-xs font-semibold flex items-center justify-center gap-1.5">
+                    <Download className="w-3.5 h-3.5" /> 下载 ZIP
+                  </button>
+                </div>
+                {allUseJwt && (
+                  <p className="text-[10px] text-amber-600">课堂凭证需签到换取，动态码课堂可能被拦截；失败不影响已抓到的页。</p>
+                )}
+              </div>
+              {bundle.warnings.length > 0 && (
+                <div className="bg-amber-50 rounded-2xl p-3 text-[11px] text-amber-700 space-y-1">
+                  {bundle.warnings.map((w, i) => <p key={i}>· {w}</p>)}
+                </div>
+              )}
+              {bundle.lessons.map((l, i) => (
+                <button key={l.activityId || i} onClick={() => openFromBundle(l)}
+                  className="w-full bg-white rounded-3xl border border-black/[0.06] p-4 text-left active:scale-[0.99] transition-all">
+                  <div className="flex items-center gap-2">
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                      l.activityId.startsWith('LIVE-') ? 'bg-emerald-50 text-emerald-600'
+                        : l.finished ? 'bg-[#F2F2F7] text-[#8E8E93]' : 'bg-blue-50 text-[#007AFF]'}`}>
+                      {l.activityId.startsWith('LIVE-') ? '进行中' : l.finished ? '已播放' : '未播放'}
+                    </span>
+                    <h3 className="text-sm font-semibold flex-1 truncate">{l.title}</h3>
+                    <ChevronRight className="w-4 h-4 text-[#C7C7CC]" />
+                  </div>
+                  <p className="text-[11px] text-[#8E8E93] mt-2">
+                    {l.presentations.length} 份课件 · {l.fetchedSlides} 页
+                    {l.declaredSlides > l.fetchedSlides && <span className="text-amber-600">（缺 {l.declaredSlides - l.fetchedSlides} 页）</span>}
+                  </p>
+                  {l.warning && <p className="text-[10px] text-amber-600 mt-1">{l.warning}</p>}
+                </button>
+              ))}
+            </>
+          ) : (
+            <div className="bg-white rounded-3xl p-10 text-center text-sm text-[#8E8E93]">点击上方按钮开始抓取</div>
+          )}
         </main>
       </div>
     );
@@ -432,7 +539,7 @@ function Header({ title, subtitle, onBack }: { title: string; subtitle: string; 
   );
 }
 
-function ProblemCard({ problem, compact = false }: { problem: ProblemView; compact?: boolean }) {
+export function ProblemCard({ problem, compact = false }: { problem: ProblemView; compact?: boolean }) {
   const strip = (s?: string) => (s ?? '').replace(/<[^>]+>/g, '').trim();
   const typeName = problem.type ?? ({ 1: '单选题', 2: '多选题', 3: '投票题', 4: '填空题', 5: '主观题' } as Record<number, string>)[problem.problemType ?? 1] ?? '题目';
   const opts = problem.options ?? [];

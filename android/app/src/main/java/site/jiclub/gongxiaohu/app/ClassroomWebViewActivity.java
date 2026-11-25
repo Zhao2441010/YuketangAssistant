@@ -2,7 +2,10 @@ package site.jiclub.gongxiaohu.app;
 
 import android.annotation.SuppressLint;
 import android.os.Bundle;
+import android.text.Html;
 import android.webkit.CookieManager;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -43,7 +46,17 @@ public class ClassroomWebViewActivity extends AppCompatActivity {
                 + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36");
 
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
-        webView.setWebViewClient(new WebViewClient());  // 页内跳转留在同一 WebView
+        // 页内跳转留在同一 WebView；主文档加载失败时给出可见提示，而不是停在空白页
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (request.isForMainFrame()) {
+                    view.loadDataWithBaseURL(null, "<html><body style='padding:32px;font-size:15px;"
+                            + "color:#8E8E93;background:#F2F2F7'>" + Html.escapeHtml(error.getDescription())
+                            + "<br><br>请检查网络后按返回键重试</body></html>", "text/html", "utf-8", null);
+                }
+            }
+        });
 
         String url = getIntent().getStringExtra(EXTRA_URL);
         if (url != null && !url.isEmpty()) webView.loadUrl(url);

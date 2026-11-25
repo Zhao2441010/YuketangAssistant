@@ -59,9 +59,13 @@ public interface YktGateway {
 
     /** 课堂信息（网关内部表示）。classroomId 可选，用于和课表匹配。 */
     record CourseInfo(String lessonId, String courseId, String courseName, int status, int currentSlide,
-                      String classroomId) {
+                      String classroomId, String universityId) {
+        public CourseInfo(String lessonId, String courseId, String courseName, int status, int currentSlide,
+                          String classroomId) {
+            this(lessonId, courseId, courseName, status, currentSlide, classroomId, "");
+        }
         public CourseInfo(String lessonId, String courseId, String courseName, int status, int currentSlide) {
-            this(lessonId, courseId, courseName, status, currentSlide, "");
+            this(lessonId, courseId, courseName, status, currentSlide, "", "");
         }
     }
 }

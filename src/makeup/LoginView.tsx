@@ -418,7 +418,7 @@ export default function LoginView({ onLogin }: Props) {
 
         <p className="text-center text-[10px] text-[#AEAEB2] leading-relaxed">
           账号凭据仅保存在本地并加密，工小湖后端不留存隐私数据
-          <br />构建版本 2026-11-25 · 短轮询版（b2）
+          <br />构建版本 2026-11-25 · 历史课堂同款版（b4）
         </p>
       </div>
     </div>

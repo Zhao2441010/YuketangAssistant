@@ -291,6 +291,41 @@ export function fetchEntryCookie(): Promise<EntryCookie> {
   return request<EntryCookie>('/lessons/entry-cookie');
 }
 
+/** 只读探测：复现官方课堂页的 lesson_info_v2，验证在读学生能否免扫码进班（不含凭据）。 */
+export interface LessonInfoProbe {
+  lessonId: string;
+  courseName: string;
+  httpStatus: number;
+  code: number;
+  msg: string;
+  hasUserAuth: boolean;
+  presentationCount: number;
+  quizCount: number;
+  hasClassroom: boolean;
+  note: string;
+}
+export function probeLessonInfo(courseId: string): Promise<LessonInfoProbe> {
+  return request<LessonInfoProbe>(`/lessons/lesson-info?courseId=${encodeURIComponent(courseId)}`);
+}
+
+/** 免扫码进班：在读学生凭登录态直接建立官方课堂会话（lesson_info_v2 → userAuth → WSS hello）。 */
+export interface LessonEnterResult {
+  lessonId: string;
+  courseName: string;
+  entered: boolean;          // userAuthReady && socketEstablished
+  userAuthReady: boolean;    // 是否换出课堂凭据 userAuth
+  socketEstablished: boolean; // WSS hello 会话是否建立
+  serverOp: string;          // 服务端首帧 op（无即时推送则空）
+  code: number;              // lesson_info_v2 业务码
+  msg: string;
+  note: string;
+}
+export function enterLesson(courseId: string): Promise<LessonEnterResult> {
+  return request<LessonEnterResult>(`/lessons/enter?courseId=${encodeURIComponent(courseId)}`, {
+    method: 'POST'
+  });
+}
+
 /** 方案④自渲染视图：后端持 pptJwt 拉好课件与题目，前端直接绘制。 */
 export interface ClassroomView {
   lessonId: string;
@@ -405,6 +440,74 @@ export function fetchActivities(courseId: string): Promise<Activity[]> {
 /** 拉课件页（PPT 图片 + 教师题目） */
 export function fetchSlides(lessonId: string): Promise<Presentation[]> {
   return request<Presentation[]>(`/content/slides?lessonId=${encodeURIComponent(lessonId)}`);
+}
+
+// ===== 全量课件：整门课 + 尚未播放的课时 + 进行中课堂未放映的页 =====
+export interface CoursewareSlide {
+  page: number;
+  imageUrl: string;
+  problem: string | null;
+  source: string;          // summary | jwt | summary+jwt
+}
+export interface CoursewarePresentation {
+  id: string;
+  title: string;
+  declaredCount: number;   // 官方声明总页数
+  fetchedCount: number;    // 实际拿到页数
+  slides: CoursewareSlide[];
+  source: string;
+}
+export interface CoursewareLesson {
+  activityId: string;
+  coursewareId: string;
+  title: string;
+  finished: boolean;
+  attended: boolean;
+  declaredSlides: number;
+  fetchedSlides: number;
+  presentations: CoursewarePresentation[];
+  warning: string;
+}
+export interface CoursewareBundle {
+  courseId: string;
+  lessonCount: number;
+  presentationCount: number;
+  slideCount: number;
+  missingPageCount: number;
+  complete: boolean;
+  lessons: CoursewareLesson[];
+  warnings: string[];
+}
+
+/**
+ * 抓取一门课的全部课件（含尚未播放的课时）。
+ * useJwt=true 时后端会在缺页时尝试用课堂凭证补全（会触发 checkin，可能被动态码拦截）。
+ */
+export function fetchAllCourseware(courseId: string, useJwt = false): Promise<CoursewareBundle> {
+  return request<CoursewareBundle>(
+    `/content/course-all?courseId=${encodeURIComponent(courseId)}&useJwt=${useJwt ? 'true' : 'false'}`
+  );
+}
+
+/** 下载全量课件 ZIP。带 X-Session-Token，不能用普通 <a href>。 */
+export async function downloadCoursewareZip(courseId: string, useJwt = false): Promise<void> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers['X-Session-Token'] = token;
+  const resp = await fetch(
+    `${API_BASE}/content/course-all.zip?courseId=${encodeURIComponent(courseId)}&useJwt=${useJwt ? 'true' : 'false'}`,
+    { headers }
+  );
+  if (!resp.ok) throw new Error(`下载失败：HTTP ${resp.status}`);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `courseware-${courseId}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ============ 随堂超时补答（真实随堂题，倒计时结束老师未收题仍可提交） ============

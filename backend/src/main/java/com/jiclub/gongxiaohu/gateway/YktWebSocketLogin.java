@@ -227,22 +227,8 @@ public class YktWebSocketLogin {
      */
     private com.jiclub.gongxiaohu.model.AuthModels.SessionContext exchangeSessionId(
             String userId, String auth, JsonNode rawUserId) throws Exception {
-        HttpResponse<String> pre = http.send(
-                HttpRequest.newBuilder(URI.create(baseUrl + "/v/course_meta/user_info"))
-                        .header("User-Agent", UA).GET().build(),
-                HttpResponse.BodyHandlers.ofString());
-        String csrf = cookie(pre, "csrftoken");
-        String uni = "", uv = "";
-        try {
-            JsonNode info = mapper.readTree(pre.body());
-            JsonNode d = info.path("data");
-            if (d.isMissingNode()) d = info;
-            uni = firstText(d, "university_id", "universityId", "school_id");
-            uv = firstText(d, "uv_id", "uvId");
-        } catch (Exception ignored) {
-            // user_info 结构因区域而异，解析不到就留空，可由 /auth/import-cookie 补齐
-        }
-
+        // 先 web_login 换 sessionid（其 Set-Cookie 里通常同时下发 sessionid 与 csrftoken）。
+        // 旧的"先调 user_info 拿 csrf"顺序在无 sessionid 时会拿到 web_redirect，导致 csrftoken 丢失。
         ObjectNode body = mapper.createObjectNode();
         if (rawUserId != null && rawUserId.isNumber()) {
             body.put("UserID", rawUserId.asLong());
@@ -257,17 +243,55 @@ public class YktWebSocketLogin {
                 .header("Referer", baseUrl + "/web")
                 .header("Accept", "application/json, text/plain, */*")
                 .POST(HttpRequest.BodyPublishers.ofString(body.toString()));
-        if (!csrf.isBlank()) {
-            req.header("Cookie", "csrftoken=" + csrf).header("X-CSRFToken", csrf);
-        }
         HttpResponse<String> resp = http.send(req.build(), HttpResponse.BodyHandlers.ofString());
         String sessionId = cookie(resp, "sessionid");
+        String csrf = cookie(resp, "csrftoken");
         if (sessionId.isBlank()) {
             log.warn("web_login 未返回 sessionid，响应片段={}",
                     resp.body() == null ? "" : resp.body().substring(0, Math.min(200, resp.body().length())));
             sessionId = "sk-" + userId;
         }
-        // 保留同一会话的 Cookie 串供 checkin 使用（csrftoken 必须与 sessionid 同源）
+        // 记录 web_login 下发的全部 Cookie 名称（不记值），定位 university_id/uv_id 来源
+        java.util.Set<String> cookieNames = new java.util.LinkedHashSet<>();
+        for (String raw : resp.headers().allValues("Set-Cookie")) {
+            String nm = raw.split(";", 2)[0].trim();
+            int eq = nm.indexOf('=');
+            if (eq > 0) cookieNames.add(nm.substring(0, eq).trim());
+        }
+        log.info("web_login Set-Cookie 清单 userId={} cookies={}",
+                mask(userId), cookieNames);
+
+        // 带上 sessionid 再调 user_info，补齐 csrftoken + university_id + uv_id
+        String uni = "", uv = "";
+        try {
+            HttpResponse<String> infoResp = http.send(
+                    HttpRequest.newBuilder(URI.create(baseUrl + "/v/course_meta/user_info"))
+                            .header("User-Agent", UA)
+                            .header("Cookie", "sessionid=" + sessionId
+                                    + (csrf.isBlank() ? "" : "; csrftoken=" + csrf))
+                            .GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (csrf.isBlank()) csrf = cookie(infoResp, "csrftoken");
+            JsonNode info = mapper.readTree(infoResp.body());
+            JsonNode d = info.path("data");
+            if (d.isMissingNode() || d.isNull()) d = info;
+            JsonNode profile = d.path("user_profile");
+            uni = firstText(d, "university_id", "universityId", "school_id");
+            uv = firstText(d, "uv_id", "uvId");
+            if (uni.isBlank()) uni = firstText(profile, "university_id", "universityId", "school_id");
+            if (uv.isBlank()) uv = firstText(profile, "uv_id", "uvId");
+            if (uv.isBlank()) uv = firstText(d, "uv", "uvId", "uv_id");
+            log.debug("user_info 解析 csrf={} university_id={} uv_id={} 原始片段={}",
+                    csrf.isBlank() ? "-" : "***", uni.isBlank() ? "-" : "***", uv.isBlank() ? "-" : "***",
+                    infoResp.body() == null ? "" : infoResp.body().substring(0, Math.min(400, infoResp.body().length())));
+        } catch (Exception ignored) {
+            // user_info 结构因区域而异，解析不到就留空，可由 /auth/import-cookie 补齐
+        }
+
+        // 从 web_login 的 Set-Cookie 兜底补齐 university_id / uv_id
+        if (uni.isBlank()) uni = cookie(resp, "university_id");
+        if (uv.isBlank()) uv = cookie(resp, "uv_id");
+        // 保留同一会话的 Cookie 串供后续请求使用（csrftoken 必须与 sessionid 同源）
         String rawCookie = "csrftoken=" + csrf + "; sessionid=" + sessionId;
         if (!uni.isBlank()) rawCookie += "; university_id=" + uni;
         if (!uv.isBlank()) rawCookie += "; uv_id=" + uv;

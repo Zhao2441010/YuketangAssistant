@@ -325,3 +325,41 @@ grep 扫码轮询 /opt/ykt-backend/logs/app.log | tail -5
 - `扫码轮询暂未拿到凭据 ... 耗时=0ms`：正常等待，1.2 秒一条，可忽略；
 - `扫码轮询成功 ... 耗时=xx ms`：后端已签发；页面此时应立刻进首页；
 - `扫码轮询命中缓存`：前端重试取回了同一个 token——出现这条就说明"响应丢失"被兜住了。
+
+---
+
+## 十、全量课件抓取（2026-11-25 11:20）
+
+新后端接口需要**重传 jar 并重启**；新 APK 覆盖安装后，登录页水印应为「全量课件版（b3）」。
+
+```bash
+HOST=root@8.148.83.188
+scp releases/ykt-backend-scheme4.jar "$HOST":/opt/ykt-backend/ykt-backend.jar \
+  && ssh "$HOST" "systemctl restart ykt-backend && systemctl is-active ykt-backend"
+```
+
+用法：App 首页 → 课程中心 → 选一门课 → **「抓取全部 PPT（含未播放）」**。
+
+- 列表里会出现「进行中 / 已播放 / 未播放」三类课时；未播放的照样抓。
+- 若显示「缺 N 页」，可点「用课堂凭证补全缺页」；动态码课堂可能失败，失败不影响已抓到的页。
+- 「下载 ZIP」拿到全部页图片 + `manifest.csv`（带页码与来源）。
+
+服务端接口（需要 `X-Session-Token`）：
+
+```bash
+curl -H "X-Session-Token: <token>" \
+  "http://127.0.0.1:8080/api/v1/content/course-all?courseId=<课程ID>"
+```
+
+排障日志：`grep '全量课件抓取' /opt/ykt-backend/logs/app.log | tail -20`。
+
+---
+
+## 十一、当前课堂页同款化（2026-11-25 11:30）
+
+只需更新 APK（后端无改动）：`releases/gongxiaohu-v1.1.apk`，登录页水印应为「历史课堂同款版（b4）」。
+
+进入课堂后，页面会自动载入该课程的全量课件（优先进行中课堂，含未播放页），
+并拥有与历史课时页相同的题目置顶、全屏/横竖屏、双指缩放、滚轮翻页、页码输入和缩略图。
+页面顶部提示会写明实际载入的课时与页数；若显示「全量课件暂不可用」，则是抓取接口失败，
+实时课件仍可正常查看。
