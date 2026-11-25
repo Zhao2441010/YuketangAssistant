@@ -130,38 +130,69 @@ public class YktWebSocketLogin {
     public Optional<AuthCredential> pollAuthStatus(String loginId) {
         LoginFlow flow = flows.get(loginId);
         if (flow == null) {
+            log.debug("poll 找不到登录流程 loginid={}（二维码已清理或从未创建）", loginId);
             return Optional.empty();
         }
-        if (flow.expiresAt > 0 && System.currentTimeMillis() > flow.expiresAt) {
-            log.debug("二维码已过期 loginid={}", loginId);
-            cleanup(loginId, flow);
-            return Optional.empty();
-        }
-        try {
-            // 二维码有效期 60 秒，单次长轮询 45 秒；超时不销毁连接，供前端续轮询
-            JsonNode info = flow.loginFuture.get(POLL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            String userId = text(info, "UserID", "user_id");
-            String auth = text(info, "Auth", "auth");
-            if (auth.isBlank()) {
+
+        /*
+         * 2026-11-25 修复（沿用 11-24 subscribe_status 的教训）：
+         * 扫码确认是"一次性事件"，而换取 sessionid 可能失败（网络抖动 / user_info 超时 / web_login 异常）。
+         * 旧实现把"等待消息"和"换 sessionid"绑在同一次 poll 里，任何异常都会 cleanup 掉 flow，
+         * 于是扫码凭据被永久丢弃——用户看到的就是"扫了码但一直停在二维码页"。
+         * 现在：凭据一到就缓存进 flow，后续 poll 直接复用，失败只退避重试、绝不清空凭据。
+         */
+        JsonNode info = flow.credential;
+        if (info == null) {
+            // 只有还没收到 loginsuccess 时才受二维码有效期约束
+            if (flow.expiresAt > 0 && System.currentTimeMillis() > flow.expiresAt) {
+                log.debug("二维码已过期 loginid={}", loginId);
+                cleanup(loginId, flow);
                 return Optional.empty();
             }
+            try {
+                // 二维码有效期 60 秒，单次长轮询 45 秒；超时不销毁连接，供前端续轮询
+                info = flow.loginFuture.get(POLL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                if (!flow.cacheCredential(info)) {
+                    log.debug("收到不含 Auth 的消息，忽略并继续等待 loginid={}", loginId);
+                    return Optional.empty();
+                }
+            } catch (java.util.concurrent.TimeoutException e) {
+                // 超时只返回空，保留 flow 与 WebSocket，前端可在二维码有效期内续轮询
+                log.debug("真实登录等待扫码超时（可续轮询） loginid={}", loginId);
+                return Optional.empty();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return Optional.empty();
+            } catch (Exception e) {
+                log.warn("等待扫码结果异常 loginid={}: {}", loginId, e.getMessage());
+                cleanup(loginId, flow);
+                return Optional.empty();
+            }
+        }
+
+        String userId = text(info, "UserID", "user_id");
+        String auth = text(info, "Auth", "auth", "AUTH");
+        if (auth.isBlank()) return Optional.empty();
+
+        // 换 sessionid 失败时短暂退避，避免前端 500ms 续轮询造成密集重试
+        long wait = flow.nextExchangeAt - System.currentTimeMillis();
+        if (wait > 0) {
+            try { Thread.sleep(Math.min(wait, 3000L)); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); return Optional.empty(); }
+        }
+
+        try {
             com.jiclub.gongxiaohu.model.AuthModels.SessionContext ctx =
                     exchangeSessionId(userId, auth, info.get("UserID"));
             log.info("真实扫码登录成功 userId={} 有csrftoken={}",
                     mask(userId), !ctx.csrftoken().isBlank());
             cleanup(loginId, flow); // 成功后释放连接
             return Optional.of(new AuthCredential(userId, ctx.sessionId(), ctx));
-        } catch (java.util.concurrent.TimeoutException e) {
-            // 关键：超时只返回空，保留 flow 与 WebSocket，前端可在二维码有效期内续轮询
-            log.debug("真实登录等待扫码超时（可续轮询） loginid={}", loginId);
-            return Optional.empty();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            cleanup(loginId, flow);
-            return Optional.empty();
         } catch (Exception e) {
-            log.warn("真实登录失败 loginid={}: {}", loginId, e.getMessage());
-            cleanup(loginId, flow);
+            // 关键：只退避、不 cleanup。凭据仍在 flow.credential 里，下次 poll 直接重试换取。
+            flow.nextExchangeAt = System.currentTimeMillis() + 3000L;
+            log.warn("已收到扫码凭据，但换取 sessionid 失败，保留凭据供下次轮询重试 loginid={} userId={}: {}",
+                    loginId, mask(userId), e.getMessage());
             return Optional.empty();
         }
     }
@@ -281,15 +312,15 @@ public class YktWebSocketLogin {
                         node.path("expire_seconds").asInt(60),
                         node.path("qrcode").asText("")
                 ));
-            } else if ("loginsuccess".equals(op) || node.has("subscribe_status")) {
-                // 关键修复：只有真正带 Auth 的消息才算登录成功。
+            } else if ("loginsuccess".equals(op) || node.has("subscribe_status")
+                    || node.has("Auth") || node.has("auth")) {
+                // 关键修复（11-24）：只有真正带 Auth 的消息才算登录成功。
                 // subscribe_status 是订阅状态通知，可能先于 loginsuccess 到达且不含 Auth；
                 // 若它也 complete loginFuture，poll 会拿到空 Auth 并返回空，
                 // 而 future 已无法再次 complete，真正的 loginsuccess 被丢弃 → 永远登不上。
-                String auth = text(node, "Auth", "auth");
-                if (!auth.isBlank()) {
+                // 11-25 追加：cacheCredential 同时缓存凭据，避免换 sessionid 失败后丢失扫码结果。
+                if (flow.cacheCredential(node)) {
                     log.info("收到登录成功凭据 loginid={} op={}", flow.loginId, op);
-                    flow.loginFuture.complete(node);
                 } else {
                     log.debug("忽略不含 Auth 的状态通知 op={} keys={}", op, node.fieldNames());
                 }
@@ -333,13 +364,29 @@ public class YktWebSocketLogin {
                 : value.substring(0, 2) + "****" + value.substring(value.length() - 2);
     }
 
-    private static final class LoginFlow {
+    /** 包可见，便于单测直接验证"无 Auth 消息不能消费登录凭据"。 */
+    static final class LoginFlow {
         final CompletableFuture<QrInfo> qrFuture = new CompletableFuture<>();
         final CompletableFuture<JsonNode> loginFuture = new CompletableFuture<>();
         final StringBuilder buffer = new StringBuilder();
         volatile WebSocket ws;
         volatile long expiresAt;
         volatile String loginId;
+        /** 扫码成功后缓存的原始消息；换 sessionid 失败也不会丢。 */
+        volatile JsonNode credential;
+        /** 换取 sessionid 失败后的最早重试时间（毫秒）。 */
+        volatile long nextExchangeAt;
+
+        /**
+         * 只接受带非空 Auth 的登录成功消息；缓存凭据并唤醒等待中的 poll。
+         * 返回 false 表示这是一条状态通知，必须忽略。
+         */
+        boolean cacheCredential(JsonNode node) {
+            if (node == null || text(node, "Auth", "auth", "AUTH").isBlank()) return false;
+            if (credential == null) credential = node; // 只保留首次真实凭据
+            loginFuture.complete(node); // 已完成时是 no-op，不会覆盖首次凭据
+            return true;
+        }
     }
 
     private record QrInfo(String ticketUrl, String loginId, int expireSeconds, String qrcode) {}

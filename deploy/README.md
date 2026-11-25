@@ -106,13 +106,54 @@ bash /opt/ykt-backend/logs.sh login 20
 bash /opt/ykt-backend/logs.sh user 2023012345
 bash /opt/ykt-backend/logs.sh pack        # 打包到 /tmp/ykt-logs-*.tar.gz
 
-# 打包回本地
-ssh root@8.148.83.188 "tar -czf /tmp/ykt-logs.tar.gz -C /opt/ykt-backend/logs ."
-scp root@8.148.83.188:/tmp/ykt-logs.tar.gz .
-scp root@8.148.83.188:/opt/ykt-backend/logs/audit.log .
+# 打包回本地（在本机项目根目录执行）
+bash deploy/fetch-logs.sh            # → logs-backup/20261124-181630/{app.log,audit.log,...}
+ONLY=audit bash deploy/fetch-logs.sh # 只拉审计日志（小，查学号够用）
 ```
 
 日志自动按天 + 大小轮转并 gzip：app 保留 14 天、audit 保留 180 天，不会无限增长。
+
+**拉到本地放在哪**：`scp ... .` 里的 `.` 就是"你执行命令时所在的当前目录"（不是项目目录、也不是下载文件夹）。
+用 `bash deploy/fetch-logs.sh` 则固定落到 `D:/workspace/tools/YuketangAssistant/logs-backup/<时间戳>/`，
+已加入 `.gitignore`（含学号明文，不进仓库）。想放到别处就加目标路径或改 `DEST_ROOT`：
+
+```bash
+scp root@8.148.83.188:/opt/ykt-backend/logs/audit.log D:/logs/audit.log
+DEST_ROOT=D:/logs bash deploy/fetch-logs.sh
+```
+
+**三条命令各拉什么**：
+
+| 命令 | 拉回的东西 | 落地形态 |
+|---|---|---|
+| `bash deploy/fetch-logs.sh` | `/opt/ykt-backend/logs/` **整个目录**：`app.log` + `audit.log` + 历史轮转包 `app.2026-11-23.0.log.gz`、`audit.*.log.gz` | 服务器先打 tar.gz → 下载 → 本地自动解开，目录里就是原始文件 |
+| `ONLY=audit bash deploy/fetch-logs.sh` | 只有 `audit.log` 一个文件（+ 历史 `audit.*.gz`） | 同上，仍走 tar.gz 中转，本地解开后只有 audit 相关文件 |
+| `scp root@...:/opt/ykt-backend/logs/audit.log .` | 只有**当前** `audit.log`，不含历史轮转包 | 单个纯文本文件，不解压，直接能打开 |
+
+三种都只包含日志文本，不含 jar/配置/Cookie。
+
+**怎么解析**（本地执行，`列` 已对齐）：
+
+```bash
+# 1) 谁登录了：按学号汇总（登录次数/首次/末次/渠道/IP）
+bash deploy/parse-logs.sh logs-backup/20261124-181630/audit.log users
+
+# 2) 某学号完整时间线（登录→进课堂→登出）
+bash deploy/parse-logs.sh logs-backup/20261124-181630/audit.log user 2023012345
+
+# 3) 全部事件明细（含每条 HTTP 状态/耗时）
+bash deploy/parse-logs.sh logs-backup/20261124-181630/audit.log events
+
+# 4) 接口健康度：次数/错误数/平均耗时/最大耗时/用户数
+bash deploy/parse-logs.sh logs-backup/20261124-181630/app.log access
+
+# 5) 历史轮转包直接读（.gz 会自动解，也可 gzip -dc 管道进来）
+bash deploy/parse-logs.sh logs-backup/20261124-181630/audit.2026-11-23.0.log.gz users
+```
+
+不做加工也看得懂：每行是
+`日期 时间 级别 [线程] AUDIT - 事件 键=值 键=值 ...`，
+grep 单个学号、单个事件就能定位；要进 Excel 就把输出重定向 `> events.tsv` 再用 Excel 导入（制表符分隔）。
 
 ---
 
@@ -217,3 +258,23 @@ ls -l /opt/ykt-backend/logs/
 5. 生成正式签名替换 debug 签名
 
 > 当前 HTTP 明文传输 token/sessionid，仅个人调试可接受；正式使用务必上 HTTPS。
+
+---
+
+## 八、扫码后停在二维码页（2026-11-25 修复）
+
+Symptoms：手机已扫码确认，二维码页不动 / 显示成功但不进首页。
+
+**必须同时更新两端**（只更新一端仍可能卡住）：
+
+1. 后端：`scp releases/ykt-backend-scheme4.jar root@<IP>:/opt/ykt-backend/ykt-backend.jar` → `systemctl restart ykt-backend`
+2. 手机：覆盖安装 `releases/gongxiaohu-v1.0.apk`（修复了成功态跳转被丢弃的问题，并加了「进入首页」兜底按钮）
+
+服务端日志判断（`grep -E '扫码轮询|收到登录成功凭据|换取 sessionid' logs/app.log`）：
+
+| 日志 | 含义 |
+|---|---|
+| `扫码轮询暂未拿到凭据` | 微信侧还没确认；继续等即可 |
+| `收到登录成功凭据` | 扫码确认已到后端，接下来换 sessionid |
+| `换取 sessionid 失败，保留凭据供下次轮询重试` | 网络/官方接口抖动；新逻辑不会丢凭据，无需重新扫码 |
+| `真实扫码登录成功` | 后端已完成；前端仍不动就点二维码页的「进入首页」 |

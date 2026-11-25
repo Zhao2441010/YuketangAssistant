@@ -16,6 +16,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 
@@ -23,6 +25,8 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/v1/auth")
 public class AuthController {
+    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
+
     private final AuthService authService;
     private final JoinLessonService joinLessonService;
     private final InClassQuizService inClassQuizService;
@@ -50,7 +54,22 @@ public class AuthController {
         if (ticket == null || ticket.isBlank()) {
             return ApiResponse.fail(400, "缺少 ticket");
         }
-        return ApiResponse.ok(authService.pollAndLogin(ticket));
+        try {
+            var result = authService.pollAndLogin(ticket);
+            log.info("扫码轮询成功 ticket={} userId={} mock={}",
+                    fingerprint(ticket), result.userId(), result.mock());
+            return ApiResponse.ok(result);
+        } catch (com.jiclub.gongxiaohu.common.BizException e) {
+            // 409 = 尚未确认/已超时，前端会续轮询；debug 级留痕，排查"扫码后停住"用
+            log.debug("扫码轮询暂未拿到凭据 ticket={} code={} msg={}",
+                    fingerprint(ticket), e.getCode(), e.getMessage());
+            throw e;
+        }
+    }
+
+    private static String fingerprint(String ticket) {
+        if (ticket == null || ticket.isBlank()) return "-";
+        return ticket.length() <= 8 ? ticket : ticket.substring(0, 8);
     }
 
     /** 3. 演示模式：模拟手机端扫码确认（真实模式不需要此接口）。 */

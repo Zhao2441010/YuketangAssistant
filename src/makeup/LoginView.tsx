@@ -29,6 +29,10 @@ export default function LoginView({ onLogin }: Props) {
   // 若据此停止轮询，扫码后前端将永远无反应。
   const pollSession = useRef(0);
   const mounted = useRef(true);
+  /** 登录成功后的凭据快照：自动跳转被环境拦截时，兜底按钮直接进首页。 */
+  const successResult = useRef<{ userId: string; mock: boolean } | null>(null);
+  /** 连续轮询失败次数，用于提示"扫码确认可能没到后端"。 */
+  const [pollTries, setPollTries] = useState(0);
 
   useEffect(() => {
     mounted.current = true;
@@ -70,6 +74,8 @@ export default function LoginView({ onLogin }: Props) {
     setPhase('loading');
     setMessage('');
     setQr(null);
+    setPollTries(0);
+    successResult.current = null;
     try {
       const loginQr = await fetchLoginQr();
       if (!mounted.current || session !== pollSession.current) return;
@@ -95,14 +101,23 @@ export default function LoginView({ onLogin }: Props) {
     try {
       const result = await pollLogin(loginQr.ticket);
       if (!mounted.current || session !== pollSession.current) return;
+      // 防御：后端返回异常结构时不要把 undefined 学号带进主界面（对齐小程序 loginSuccess）
+      if (!result?.token || !result?.userId) {
+        throw new Error('登录返回缺少 token/学号');
+      }
+      successResult.current = { userId: result.userId, mock: result.mock };
+      setPollTries(0);
       setPhase('success');
       setMessage(`登录成功，学号 ${result.userId}`);
+      // 只判断 mounted；不再用 session 拦截——用户若刚点过"重新获取"但手机其实已确认，
+      // 这次成功依然是有效登录，丢掉它就会停在二维码页。
       window.setTimeout(() => {
-        if (mounted.current && session === pollSession.current) onLogin(result.userId, result.mock);
+        if (mounted.current && successResult.current) onLogin(successResult.current.userId, successResult.current.mock);
       }, 800);
     } catch {
       // 无论超时、409 还是 WebView 中断的 fetch 错误：只要轮询会话仍有效且二维码未过期，就续轮询
       if (!mounted.current || session !== pollSession.current) return;
+      setPollTries(n => n + 1);
       if (Date.now() < loginQr.expiresAt) {
         setCountdown(Math.max(0, Math.ceil((loginQr.expiresAt - Date.now()) / 1000)));
         // 短暂延迟后重试，避免 WebView 网络抖动时疯狂打请求
@@ -112,6 +127,13 @@ export default function LoginView({ onLogin }: Props) {
       setPhase('error');
       setMessage('二维码已过期，请点击刷新重新获取');
     }
+  };
+
+  /** 自动跳转被拦截时的兜底入口（对齐小程序 login.goHome）。 */
+  const enterAppManually = () => {
+    const r = successResult.current;
+    if (!r) { setPhase('error'); setMessage('尚未登录，请重新扫码'); return; }
+    onLogin(r.userId, r.mock);
   };
 
   /** 腾讯防水墙滑块：加载官方 JS 并让用户完成验证，拿到 ticket/randstr。 */
@@ -252,6 +274,16 @@ export default function LoginView({ onLogin }: Props) {
           )}
         </div>
 
+        {/* 自动跳转失败时的兜底入口：扫码凭据已在本地，直接进首页 */}
+        {phase === 'success' && (
+          <button
+            onClick={enterAppManually}
+            className="w-full py-3 rounded-2xl bg-emerald-500 text-white text-sm font-bold hover:bg-emerald-600 active:scale-[0.99] transition-all flex items-center justify-center gap-2"
+          >
+            <CheckCircle2 className="w-4 h-4" /> 进入首页
+          </button>
+        )}
+
         {/* 状态与操作 */}
         {phase === 'waiting' && qr && (
           <div className="space-y-3">
@@ -263,6 +295,12 @@ export default function LoginView({ onLogin }: Props) {
             <div className="flex items-center justify-center gap-1.5 text-[11px] text-emerald-600">
               <Wifi className="w-3 h-3" /> 已建立长连接，确认瞬间零延迟跳转
             </div>
+            {pollTries >= 3 && (
+              <p className="text-[11px] text-amber-600 text-center leading-relaxed">
+                多次轮询未收到确认。若手机已点确认，请查看后端日志是否出现
+                「收到登录成功凭据」；确认后重新获取二维码再扫一次即可。
+              </p>
+            )}
             {qr.mockMode && (
               <button
                 onClick={() => void handleMockConfirm()}
