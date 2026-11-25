@@ -42,6 +42,17 @@ public class AuthService {
             com.jiclub.gongxiaohu.gateway.YktPasswordLoginApi> passwordLoginApi;
     private final Map<String, LocalSession> sessions = new ConcurrentHashMap<>();
 
+    /**
+     * ticket → 已签发的登录结果。用于「成功响应丢失」的补偿：同一 ticket 再轮询直接返回同一 token。
+     * 只存内存（含 token 与 sessionid，属于凭据），TTL 10 分钟、上限 512 条。
+     */
+    private final Map<String, CachedLogin> pollResults = new ConcurrentHashMap<>();
+    private static final long POLL_RESULT_TTL_MS = 10 * 60_000L;
+    private static final int POLL_RESULT_MAX = 512;
+
+    private record CachedLogin(LoginResult result, long issuedAt) {
+    }
+
     public AuthService(YktGateway gateway, AppProperties properties,
                        org.springframework.beans.factory.ObjectProvider<
                                com.jiclub.gongxiaohu.gateway.YktPasswordLoginApi> passwordLoginApi) {
@@ -56,7 +67,35 @@ public class AuthService {
 
     /** 长轮询：聊天式挂起请求。扫码成功后建立本地会话并返回 token。 */
     public LoginResult pollAndLogin(String ticket) {
-        AuthCredential credential = gateway.pollAuthStatus(ticket)
+        return pollAndLogin(ticket, 45);
+    }
+
+    /**
+     * 轮询扫码结果并按 ticket 幂等返回（2026-11-25）。
+     *
+     * <p>为什么必须幂等：扫码确认是"一次性事件"，而拿到 token 的那次 HTTP 响应可能根本到不了前端
+     * （移动端长连接被掐断、WebView 页面重建、网络切换）。旧实现成功后立即 cleanup 掉流程，
+     * 前端一旦没接住这次响应，后续轮询全是"尚未确认"，只能重新扫码——这正是
+     * "后端 LOGIN_OK、手机停在二维码页"的成因。
+     *
+     * <p>现在把结果按 ticket 缓存 10 分钟：同一个 ticket 再轮询一次，直接返回同一个 token，
+     * 前端只要还在轮询就一定能拿到登录态。
+     *
+     * @param waitSeconds 单次最长等待秒数，<= 0 表示短轮询（立即返回）
+     */
+    public LoginResult pollAndLogin(String ticket, long waitSeconds) {
+        CachedLogin cached = pollResults.get(ticket);
+        if (cached != null) {
+            if (System.currentTimeMillis() - cached.issuedAt() < POLL_RESULT_TTL_MS) {
+                log.info("扫码轮询命中缓存 ticket={} userId={}",
+                        fingerprint(ticket), maskUserId(cached.result().userId()));
+                return cached.result();
+            }
+            pollResults.remove(ticket);
+        }
+
+        long wait = Math.max(0, Math.min(waitSeconds, 45));
+        AuthCredential credential = gateway.pollAuthStatus(ticket, wait)
                 .orElseThrow(() -> BizException.conflict("登录超时或二维码尚未确认，请重新扫码"));
 
         String token = "GXH-" + UUID.randomUUID().toString().replace("-", "");
@@ -64,11 +103,35 @@ public class AuthService {
         var ctx = credential.context();
         sessions.put(token, new LocalSession(credential.userId(),
                 credential.sessionKey(), ctx, expiresAt));
-        log.info("用户登录成功 userId={} token={} 有csrftoken={}",
-                maskUserId(credential.userId()), maskToken(token), !ctx.csrftoken().isBlank());
+        log.info("用户登录成功 userId={} token={} 有csrftoken={} wait={}s",
+                maskUserId(credential.userId()), maskToken(token), !ctx.csrftoken().isBlank(), wait);
         com.jiclub.gongxiaohu.common.AuditLog.loginOk("qrcode", credential.userId());
-        return new LoginResult(token, credential.userId(), credential.sessionKey(),
+
+        LoginResult result = new LoginResult(token, credential.userId(), credential.sessionKey(),
                 expiresAt, properties.isMockMode());
+        rememberLogin(ticket, result);
+        return result;
+    }
+
+    /** 记住 ticket → 登录结果，供同 ticket 重复轮询（响应丢失后的补偿取回）。 */
+    private void rememberLogin(String ticket, LoginResult result) {
+        pollResults.put(ticket, new CachedLogin(result, System.currentTimeMillis()));
+        if (pollResults.size() > POLL_RESULT_MAX) {
+            long now = System.currentTimeMillis();
+            pollResults.entrySet().removeIf(e -> now - e.getValue().issuedAt() >= POLL_RESULT_TTL_MS);
+            // 仍超量则按最早签发时间淘汰，避免内存无界增长
+            while (pollResults.size() > POLL_RESULT_MAX) {
+                pollResults.entrySet().stream()
+                        .min(java.util.Comparator.comparingLong(e -> e.getValue().issuedAt()))
+                        .map(Map.Entry::getKey)
+                        .ifPresent(pollResults::remove);
+            }
+        }
+    }
+
+    private static String fingerprint(String ticket) {
+        if (ticket == null || ticket.isBlank()) return "-";
+        return ticket.length() <= 8 ? ticket : ticket.substring(0, 8);
     }
 
     /**

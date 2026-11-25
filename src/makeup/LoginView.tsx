@@ -23,9 +23,8 @@ export default function LoginView({ onLogin }: Props) {
   const [cookieText, setCookieText] = useState('');
   const [cookieUid, setCookieUid] = useState('');
   const [cookieBusy, setCookieBusy] = useState(false);
-  const pollAbort = useRef<AbortController | null>(null);
   // 轮询会话 ID：只有主动刷新二维码/卸载页面才 +1 使旧轮询失效。
-  // 不依赖 AbortController.signal.aborted——Android WebView 会主动 abort 长连接，
+  // 不依赖 AbortController.signal.aborted——Android WebView 会主动 abort 连接，
   // 若据此停止轮询，扫码后前端将永远无反应。
   const pollSession = useRef(0);
   const mounted = useRef(true);
@@ -33,13 +32,14 @@ export default function LoginView({ onLogin }: Props) {
   const successResult = useRef<{ userId: string; mock: boolean } | null>(null);
   /** 连续轮询失败次数，用于提示"扫码确认可能没到后端"。 */
   const [pollTries, setPollTries] = useState(0);
+  /** 最近一次轮询的返回，仅用于页面上的排障提示（不影响登录逻辑）。 */
+  const [lastPoll, setLastPoll] = useState('');
 
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
       pollSession.current += 1;
-      pollAbort.current?.abort();
     };
   }, []);
 
@@ -66,13 +66,13 @@ export default function LoginView({ onLogin }: Props) {
     }
   };
 
-  /** 创建二维码并立刻发起长轮询（与官方一致：单次挂起请求）。 */
+  /** 创建二维码并立刻开始短轮询。 */
   const startLogin = async () => {
     pollSession.current += 1;           // 使旧轮询失效
     const session = pollSession.current;
-    pollAbort.current?.abort();
     setPhase('loading');
     setMessage('');
+    setLastPoll('');
     setQr(null);
     setPollTries(0);
     successResult.current = null;
@@ -90,38 +90,40 @@ export default function LoginView({ onLogin }: Props) {
     }
   };
 
-  /** 长轮询：后端挂起最多 45 秒，扫码确认瞬间返回；超时/中断则在二维码有效期内自动续轮询。
-   *  关键：Android WebView 会主动 abort 长连接，不能用 signal.aborted 判断是否停止，
-   *  只能用 pollSession（主动刷新/卸载才变）控制，否则扫码后前端无反应。 */
+  /**
+   * 短轮询：每 1.2 秒问一次，单次请求 1 秒内必定返回。
+   *
+   * 为什么不再用 45 秒长轮询（2026-11-25 实测结论）：
+   * Android WebView / 运营商 NAT 会把空闲 30-40 秒的连接静默掐断。后端把"扫码成功"
+   * 写回这条已死连接时，前端只收到网络错误并继续重试，而服务端 flow 已被清理，
+   * 后续轮询全是"尚未确认"——这就是"后端日志 LOGIN_OK、手机停在二维码页"的真正成因。
+   * 短轮询没有长空闲连接；再加上后端按 ticket 幂等返回，某次响应丢了下次也能取回 token。
+   */
   const beginPoll = async (loginQr: LoginQr, session: number) => {
     if (!mounted.current || session !== pollSession.current) return;
-    const controller = new AbortController();
-    pollAbort.current = controller;
     setCountdown(Math.max(0, Math.ceil((loginQr.expiresAt - Date.now()) / 1000)));
     try {
-      const result = await pollLogin(loginQr.ticket);
-      if (!mounted.current || session !== pollSession.current) return;
+      const result = await pollLogin(loginQr.ticket, 0);
+      if (!mounted.current) return;
       // 防御：后端返回异常结构时不要把 undefined 学号带进主界面（对齐小程序 loginSuccess）
       if (!result?.token || !result?.userId) {
         throw new Error('登录返回缺少 token/学号');
       }
       successResult.current = { userId: result.userId, mock: result.mock };
       setPollTries(0);
+      setLastPoll('已确认');
       setPhase('success');
       setMessage(`登录成功，学号 ${result.userId}`);
-      // 只判断 mounted；不再用 session 拦截——用户若刚点过"重新获取"但手机其实已确认，
-      // 这次成功依然是有效登录，丢掉它就会停在二维码页。
-      window.setTimeout(() => {
-        if (mounted.current && successResult.current) onLogin(successResult.current.userId, successResult.current.mock);
-      }, 800);
-    } catch {
-      // 无论超时、409 还是 WebView 中断的 fetch 错误：只要轮询会话仍有效且二维码未过期，就续轮询
+      // 立即提交登录态，不做定时器/会话判断：成功响应已经拿到，任何延迟或拦截都可能把它弄丢
+      onLogin(result.userId, result.mock);
+    } catch (e) {
+      // 无论 409、网络抖动还是 WebView 中断：只要二维码未过期就继续轮询
       if (!mounted.current || session !== pollSession.current) return;
       setPollTries(n => n + 1);
+      setLastPoll((e as Error).message || '等待扫码确认');
       if (Date.now() < loginQr.expiresAt) {
         setCountdown(Math.max(0, Math.ceil((loginQr.expiresAt - Date.now()) / 1000)));
-        // 短暂延迟后重试，避免 WebView 网络抖动时疯狂打请求
-        window.setTimeout(() => void beginPoll(loginQr, session), 500);
+        window.setTimeout(() => { void beginPoll(loginQr, session); }, 1200);
         return;
       }
       setPhase('error');
@@ -293,12 +295,19 @@ export default function LoginView({ onLogin }: Props) {
               <span className="font-mono text-[#8E8E93]">{countdown}s</span>
             </div>
             <div className="flex items-center justify-center gap-1.5 text-[11px] text-emerald-600">
-              <Wifi className="w-3 h-3" /> 已建立长连接，确认瞬间零延迟跳转
+              <Wifi className="w-3 h-3" /> 每 1.2 秒自动检查一次，确认后立即进入
             </div>
-            {pollTries >= 3 && (
+            {pollTries > 0 && (
+              <div className="flex items-center justify-center gap-1.5 text-[11px] text-[#8E8E93]">
+                <span>已检查 {pollTries} 次</span>
+                <span className="max-w-[190px] truncate">· {lastPoll || '等待确认'}</span>
+              </div>
+            )}
+            {pollTries >= 8 && (
               <p className="text-[11px] text-amber-600 text-center leading-relaxed">
-                多次轮询未收到确认。若手机已点确认，请查看后端日志是否出现
-                「收到登录成功凭据」；确认后重新获取二维码再扫一次即可。
+                若手机已点「确认登录」，请在后端执行
+                <code className="mx-1 px-1 rounded bg-[#F2F2F7]">grep 扫码轮询 /opt/ykt-backend/logs/app.log | tail -3</code>
+                看是否出现「扫码轮询成功」。
               </p>
             )}
             {qr.mockMode && (
@@ -409,6 +418,7 @@ export default function LoginView({ onLogin }: Props) {
 
         <p className="text-center text-[10px] text-[#AEAEB2] leading-relaxed">
           账号凭据仅保存在本地并加密，工小湖后端不留存隐私数据
+          <br />构建版本 2026-11-25 · 短轮询版（b2）
         </p>
       </div>
     </div>

@@ -81,21 +81,45 @@ export interface ApiResponse<T> {
 }
 
 // ============ 本地会话 token 管理 ============
+/*
+ * 2026-11-25：内存兜底。Android WebView 在 file:// / 某些内嵌环境下
+ * localStorage.setItem 会抛 SecurityError（或 silently 不落盘）。
+ * 旧实现里 pollLogin 拿到 token 后调 setToken 抛异常 → 前端当成"轮询失败"继续重试，
+ * 而后端已经记录 LOGIN_OK —— 表现就是"后端登录成功、前端卡在二维码页"。
+ * 现在：先写内存变量，localStorage 只做持久化增强，写不进去也不影响本次登录。
+ */
+let memoryToken: string | null = null;
+let memorySessionId: string | null = null;
+
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  try {
+    const stored = localStorage.getItem(TOKEN_KEY);
+    if (stored) return stored;
+  } catch { /* WebView 禁用存储时忽略 */ }
+  return memoryToken;
 }
 export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token);
+  memoryToken = token;
+  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* 内存兜底已生效 */ }
 }
 export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(SESSION_ID_KEY);
+  memoryToken = null;
+  memorySessionId = null;
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(SESSION_ID_KEY);
+  } catch { /* 忽略 */ }
 }
 export function getSessionId(): string | null {
-  return localStorage.getItem(SESSION_ID_KEY);
+  try {
+    const stored = localStorage.getItem(SESSION_ID_KEY);
+    if (stored) return stored;
+  } catch { /* 忽略 */ }
+  return memorySessionId;
 }
 export function setSessionId(sid: string): void {
-  localStorage.setItem(SESSION_ID_KEY, sid);
+  memorySessionId = sid;
+  try { localStorage.setItem(SESSION_ID_KEY, sid); } catch { /* 内存兜底已生效 */ }
 }
 
 async function request<T>(path: string, init?: RequestInit, auth = true, retried = false): Promise<T> {
@@ -146,11 +170,20 @@ export function fetchLoginQr(): Promise<LoginQr> {
   return request<LoginQr>('/auth/qr', undefined, false);
 }
 
-/** 2. 45 秒阻塞长轮询：扫码确认瞬间返回 token，并保存到本地供业务请求携带 */
-export async function pollLogin(ticket: string): Promise<LoginResult> {
+/**
+ * 2. 轮询扫码结果。
+ *
+ * 2026-11-25：改为「短轮询」。原来是 45 秒长轮询，移动端（Android WebView / 运营商 NAT）
+ * 会把空闲 30-40 秒的连接静默掐断，后端把扫码成功写回这条已死连接时前端只收到网络错误，
+ * 于是一直重试、永远停在二维码页——但服务端日志里已经有 LOGIN_OK。
+ * 现在每次 1 秒内必定返回，且后端按 ticket 幂等返回同一 token，响应丢了下次也能取回。
+ *
+ * @param waitSeconds 单次最长等待秒数，0 = 立即返回
+ */
+export async function pollLogin(ticket: string, waitSeconds = 0): Promise<LoginResult> {
   const result = await request<LoginResult>('/auth/poll', {
     method: 'POST',
-    body: JSON.stringify({ ticket })
+    body: JSON.stringify({ ticket, wait: String(waitSeconds) })
   }, false);
   setToken(result.token);
   setSessionId(result.sessionKey); // 保存真实 sessionid，供 token 过期时无感续期

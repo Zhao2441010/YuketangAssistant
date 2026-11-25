@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft, BookOpen, Check, CheckCircle2, ChevronRight, Clock,
   Layers, Loader2, LogOut, MapPin, Plus, RefreshCw, Send, User, Wifi, X
@@ -292,7 +292,10 @@ export default function MakeupApp() {
     return () => { active = false; };
   }, []);
 
+  // 刚登录的时间：短时间内业务请求若返回 401，先重试而不是立刻把用户踢回二维码页
+  const loggedInAt = useRef(0);
   const handleLogin = (id: string, _mock: boolean) => {
+    loggedInAt.current = Date.now();
     setUserId(id);
     setLoggedIn(true);
   };
@@ -318,6 +321,12 @@ export default function MakeupApp() {
     } catch (e) {
       const code = (e as Error & { code?: number }).code;
       if (code === 401) {
+        // 登录成功后 10 秒内的 401 多为会话状态尚未同步；重试一次，
+        // 避免"刚登录成功就被 loadCourses 弹回二维码页"（用户感知为扫码无反应）
+        if (!silent && Date.now() - loggedInAt.current < 10_000) {
+          window.setTimeout(() => { if (getToken()) void loadCourses(true); }, 800);
+          return;
+        }
         clearToken();
         setLoggedIn(false);
         return;

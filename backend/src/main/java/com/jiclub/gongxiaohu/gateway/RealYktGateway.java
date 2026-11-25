@@ -79,6 +79,12 @@ public class RealYktGateway implements YktGateway {
         return wsLogin.pollAuthStatus(ticket);
     }
 
+    /** 短轮询入口：waitSeconds<=0 时立即返回，避免移动端长空闲连接被掐断。 */
+    @Override
+    public Optional<AuthCredential> pollAuthStatus(String ticket, long waitSeconds) {
+        return wsLogin.pollAuthStatus(ticket, waitSeconds);
+    }
+
     /**
      * 正在上课检测：使用 v3 接口（来源 powercess/yuketang-mcp，注释指明旧的
      * v/course_meta/on_lesson_courses 会漏报）。返回 onLessonClassrooms 数组。

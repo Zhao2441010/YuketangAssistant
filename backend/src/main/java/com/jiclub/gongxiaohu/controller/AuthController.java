@@ -47,23 +47,43 @@ public class AuthController {
         return ApiResponse.ok(authService.createLoginQr());
     }
 
-    /** 2. 45 秒阻塞长轮询：手机确认登录的瞬间立即返回 token。 */
+    /**
+     * 2. 轮询扫码结果。
+     *
+     * <p>body {ticket, wait}：wait 为单次最长等待秒数，缺省 45（兼容旧客户端长轮询）；
+     * 前端传 0 走短轮询，1 秒内必定返回，避免移动端长空闲连接被掐断导致成功响应丢失。
+     * 同一 ticket 重复轮询是幂等的——会拿回同一个 token。
+     */
     @PostMapping("/poll")
     public ApiResponse<LoginResult> poll(@RequestBody Map<String, String> body) {
         String ticket = body.get("ticket");
         if (ticket == null || ticket.isBlank()) {
             return ApiResponse.fail(400, "缺少 ticket");
         }
+        long wait = parseWaitSeconds(body.get("wait"));
+        long started = System.currentTimeMillis();
         try {
-            var result = authService.pollAndLogin(ticket);
-            log.info("扫码轮询成功 ticket={} userId={} mock={}",
-                    fingerprint(ticket), result.userId(), result.mock());
+            var result = authService.pollAndLogin(ticket, wait);
+            log.info("扫码轮询成功 ticket={} userId={} mock={} wait={}s 耗时={}ms",
+                    fingerprint(ticket), result.userId(), result.mock(), wait,
+                    System.currentTimeMillis() - started);
             return ApiResponse.ok(result);
         } catch (com.jiclub.gongxiaohu.common.BizException e) {
             // 409 = 尚未确认/已超时，前端会续轮询；debug 级留痕，排查"扫码后停住"用
-            log.debug("扫码轮询暂未拿到凭据 ticket={} code={} msg={}",
-                    fingerprint(ticket), e.getCode(), e.getMessage());
+            log.debug("扫码轮询暂未拿到凭据 ticket={} code={} wait={}s 耗时={}ms msg={}",
+                    fingerprint(ticket), e.getCode(), wait,
+                    System.currentTimeMillis() - started, e.getMessage());
             throw e;
+        }
+    }
+
+    /** wait 缺省 45 秒（旧客户端长轮询）；负数或非法值回落到默认，上限 45。 */
+    private static long parseWaitSeconds(String raw) {
+        if (raw == null || raw.isBlank()) return 45;
+        try {
+            return Math.max(0, Math.min(Long.parseLong(raw.trim()), 45));
+        } catch (NumberFormatException e) {
+            return 45;
         }
     }
 

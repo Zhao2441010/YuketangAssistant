@@ -25,6 +25,20 @@ public interface YktGateway {
      */
     Optional<AuthCredential> pollAuthStatus(String ticket);
 
+    /**
+     * 同上，可指定本次最长等待秒数。
+     *
+     * <p>2026-11-25 新增：移动端（Android WebView / 运营商 NAT）会把 40 秒以上的空闲连接
+     * 静默掐断，服务端把「扫码成功」写回这条已死连接时，前端只会收到网络错误，
+     * 表现就是"后端 LOGIN_OK、手机停在二维码页"。前端改用 1 秒内的短轮询后不再有长空闲连接。
+     *
+     * @param waitSeconds 本次最长等待秒数；<= 0 表示立即返回（短轮询）
+     * @return 已确认则返回凭据，否则 empty
+     */
+    default Optional<AuthCredential> pollAuthStatus(String ticket, long waitSeconds) {
+        return pollAuthStatus(ticket);
+    }
+
     /** 获取课表：对应 get_user_course_list。 */
     CourseListResult fetchCourseList(String sessionKey);
 

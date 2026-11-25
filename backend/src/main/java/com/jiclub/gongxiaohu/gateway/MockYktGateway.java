@@ -100,18 +100,29 @@ public class MockYktGateway implements YktGateway {
 
     @Override
     public Optional<AuthCredential> pollAuthStatus(String ticket) {
+        return pollAuthStatus(ticket, POLL_TIMEOUT_SECONDS);
+    }
+
+    @Override
+    public Optional<AuthCredential> pollAuthStatus(String ticket, long waitSeconds) {
         CompletableFuture<AuthCredential> future = pendingTickets.get(ticket);
         if (future == null) {
             return Optional.empty();
         }
+        // 短轮询：已确认就直接取，否则立即返回，绝不阻塞等待
+        if (waitSeconds <= 0 && !future.isDone()) {
+            return Optional.empty();
+        }
         try {
-            // 博客核心：单次请求挂起最多 45 秒，扫码确认瞬间立刻返回
-            AuthCredential credential = future.get(POLL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            // 博客核心：单次请求挂起最多 waitSeconds 秒，扫码确认瞬间立刻返回
+            AuthCredential credential = waitSeconds <= 0
+                    ? future.get()
+                    : future.get(waitSeconds, TimeUnit.SECONDS);
             pendingTickets.remove(ticket);
             return Optional.of(credential);
         } catch (java.util.concurrent.TimeoutException e) {
+            // 不删除 ticket：二维码有效期内前端可继续轮询（与真实网关行为保持一致）
             log.debug("登录轮询超时 ticket={}", ticket);
-            pendingTickets.remove(ticket);
             return Optional.empty();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

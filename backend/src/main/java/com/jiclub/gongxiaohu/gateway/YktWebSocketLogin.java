@@ -128,9 +128,19 @@ public class YktWebSocketLogin {
      * @param loginId 创建二维码时返回的 loginid（不是图片 URL）
      */
     public Optional<AuthCredential> pollAuthStatus(String loginId) {
+        return pollAuthStatus(loginId, POLL_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * 等待扫码确认（最多 waitSeconds 秒），拿到 UserID/Auth 后换取 sessionid。
+     *
+     * @param loginId     创建二维码时返回的 loginid（不是图片 URL）
+     * @param waitSeconds 本次最长等待秒数；<= 0 为短轮询，立即返回不阻塞
+     */
+    public Optional<AuthCredential> pollAuthStatus(String loginId, long waitSeconds) {
         LoginFlow flow = flows.get(loginId);
         if (flow == null) {
-            log.debug("poll 找不到登录流程 loginid={}（二维码已清理或从未创建）", loginId);
+            log.debug("poll 找不到登录流程 loginid={}（已完成并清理 / 二维码过期 / 从未创建）", loginId);
             return Optional.empty();
         }
 
@@ -149,9 +159,15 @@ public class YktWebSocketLogin {
                 cleanup(loginId, flow);
                 return Optional.empty();
             }
+            if (waitSeconds <= 0) {
+                // 短轮询：不阻塞。前端每 1 秒问一次，扫码瞬间最多晚 1 秒感知，
+                // 但避免了长空闲连接被 WebView/NAT 掐断导致成功响应丢失。
+                log.debug("短轮询暂无凭据 loginid={}", loginId);
+                return Optional.empty();
+            }
             try {
                 // 二维码有效期 60 秒，单次长轮询 45 秒；超时不销毁连接，供前端续轮询
-                info = flow.loginFuture.get(POLL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                info = flow.loginFuture.get(waitSeconds, TimeUnit.SECONDS);
                 if (!flow.cacheCredential(info)) {
                     log.debug("收到不含 Auth 的消息，忽略并继续等待 loginid={}", loginId);
                     return Optional.empty();
@@ -174,9 +190,9 @@ public class YktWebSocketLogin {
         String auth = text(info, "Auth", "auth", "AUTH");
         if (auth.isBlank()) return Optional.empty();
 
-        // 换 sessionid 失败时短暂退避，避免前端 500ms 续轮询造成密集重试
+        // 换 sessionid 失败时短暂退避，避免前端续轮询造成密集重试（短轮询下直接返回，由前端节流）
         long wait = flow.nextExchangeAt - System.currentTimeMillis();
-        if (wait > 0) {
+        if (wait > 0 && waitSeconds > 0) {
             try { Thread.sleep(Math.min(wait, 3000L)); }
             catch (InterruptedException e) { Thread.currentThread().interrupt(); return Optional.empty(); }
         }

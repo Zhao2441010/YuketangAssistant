@@ -278,3 +278,50 @@ Symptoms：手机已扫码确认，二维码页不动 / 显示成功但不进首
 | `收到登录成功凭据` | 扫码确认已到后端，接下来换 sessionid |
 | `换取 sessionid 失败，保留凭据供下次轮询重试` | 网络/官方接口抖动；新逻辑不会丢凭据，无需重新扫码 |
 | `真实扫码登录成功` | 后端已完成；前端仍不动就点二维码页的「进入首页」 |
+
+---
+
+## 九、扫码后停住：真正的根因与最终改法（2026-11-25 09:10）
+
+第八节那次修的是"凭据被丢弃"，但线上仍然出现 **后端 LOGIN_OK、手机停在二维码页**。
+用用户提供的日志定位到了最后两个成因：
+
+| 日志 | 真实含义 |
+|---|---|
+| `AUDIT - LOGIN_OK method=qrcode userId=...` | 后端全链路成功，token 已签发 |
+| `ACCESS - POST /api/v1/auth/poll status=200 耗时=4ms` | **不是成功**：`BizException` 被包成 HTTP 200 + body `code=409`；4ms 表示网关里该 ticket 的流程已被 cleanup |
+| 正常"等待确认"应是 `耗时≈45000ms` | 秒回只可能是"流程不存在"——成功那次响应没被前端消费 |
+
+### 两个成因
+
+1. **45 秒长轮询在移动端活不下来**：Android WebView / 运营商 NAT 会掐断空闲 30–40 秒的连接，
+   服务端把成功响应写回已死连接，前端只看到网络错误。
+2. **结果只发一次**：成功后立刻 cleanup，同一 ticket 再也取不回登录态。
+
+### 改法（后端 + APP 都要更新）
+
+- 后端 `POST /auth/poll` 支持 `{ticket, wait}`：`wait=0` 立即返回；**同一 ticket 重复轮询幂等返回同一 token**（缓存 10 分钟）。
+- 前端每 1.2 秒短轮询一次，成功立即 `onLogin`；二维码下方显示「已检查 N 次 · 最近返回」。
+- 旧客户端（小程序）不传 `wait`，仍走 45 秒长轮询，行为不变。
+
+### 部署
+
+```bash
+cd D:/workspace/tools/YuketangAssistant
+HOST=root@8.148.83.188
+scp releases/ykt-backend-scheme4.jar "$HOST":/opt/ykt-backend/ykt-backend.jar \
+  && ssh "$HOST" "systemctl restart ykt-backend && systemctl is-active ykt-backend"
+```
+
+手机覆盖安装 `releases/gongxiaohu-v1.0.apk`（09:13 重建，JS `main-Byktpd8l.js`），
+登录页底部应显示 **「构建版本 2026-11-25 · 短轮询版（b2）」**——看不到就是没装上。
+
+### 确认修好了
+
+```bash
+grep 扫码轮询 /opt/ykt-backend/logs/app.log | tail -5
+```
+
+- `扫码轮询暂未拿到凭据 ... 耗时=0ms`：正常等待，1.2 秒一条，可忽略；
+- `扫码轮询成功 ... 耗时=xx ms`：后端已签发；页面此时应立刻进首页；
+- `扫码轮询命中缓存`：前端重试取回了同一个 token——出现这条就说明"响应丢失"被兜住了。
