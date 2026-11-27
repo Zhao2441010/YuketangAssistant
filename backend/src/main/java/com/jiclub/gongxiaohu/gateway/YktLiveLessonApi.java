@@ -57,27 +57,45 @@ public class YktLiveLessonApi {
     ) {}
 
     /** 拉进行中课堂的全部课件页；接口不可用时返回空列表 + warning，绝不抛异常给前端。 */
-    public LivePresentations fetch(SessionContext ctx, String lessonId) {
+    public LivePresentations fetch(SessionContext ctx, YktGateway.CourseInfo lesson) {
         List<String> warnings = new ArrayList<>();
-        if (ctx == null || ctx.sessionId().isBlank() || lessonId == null || lessonId.isBlank()) {
+        String lessonId = lesson == null ? "" : lesson.lessonId();
+        if (ctx == null || ctx.sessionId().isBlank() || lessonId.isBlank()) {
             return new LivePresentations(lessonId, -1, "缺少登录态或 lessonId", false, List.of(),
                     List.of("缺少登录态或 lessonId，无法拉进行中课堂课件"));
         }
         String url = baseUrl + "/v/lesson/lesson_info_v2?lesson_id="
                 + URLEncoder.encode(lessonId, StandardCharsets.UTF_8) + "&source=5";
         try {
-            HttpResponse<String> resp = http.send(
-                    HttpRequest.newBuilder(URI.create(url))
-                            .header("User-Agent", UA)
-                            .header("Accept", "application/json, text/plain, */*")
-                            .header("Cookie", ctx.cookieHeader())
-                            .header("xtbz", "ykt")
-                            .header("X-Client", "h5")
-                            .GET().build(),
-                    HttpResponse.BodyHandlers.ofString());
+            // 身份值优先取登录态；缺省时从课表 CourseInfo 补齐（与 LessonController.lessonInfo 探测同款）。
+            // 缺 X-UID / classroom-id / university-id / uv-id 是 lesson_info_v2 返回 500 的直接原因。
+            String uni = !ctx.universityId().isBlank() ? ctx.universityId() : lesson.universityId();
+            String uv = !ctx.uvId().isBlank() ? ctx.uvId() : lesson.universityId();
+            String cls = !ctx.classroomId().isBlank() ? ctx.classroomId() : lesson.classroomId();
+            String cookieHeader = ctx.cookieHeader();
+            if (!cookieHeader.toLowerCase().contains("university_id") && !uni.isBlank()) {
+                cookieHeader += "; university_id=" + uni;
+            }
+            if (!cookieHeader.toLowerCase().contains("uv_id") && !uv.isBlank()) {
+                cookieHeader += "; uv_id=" + uv;
+            }
+            HttpRequest.Builder rb = HttpRequest.newBuilder(URI.create(url))
+                    .header("User-Agent", UA)
+                    .header("Accept", "application/json, text/plain, */*")
+                    .header("Cookie", cookieHeader)
+                    .header("sessionid", ctx.sessionId())          // Android 逆向：缺它即 401/50000
+                    .header("xtbz", "ykt")
+                    .header("X-Client", "web")
+                    .header("xt-agent", "web");
+            if (!ctx.userId().isBlank()) rb.header("X-UID", ctx.userId());
+            if (!ctx.csrftoken().isBlank()) rb.header("X-CSRFToken", ctx.csrftoken());
+            if (!uni.isBlank()) rb.header("university-id", uni);
+            if (!uv.isBlank()) rb.header("uv-id", uv);
+            if (!cls.isBlank()) rb.header("classroom-id", cls);
+            HttpResponse<String> resp = http.send(rb.GET().build(), HttpResponse.BodyHandlers.ofString());
             JsonNode root = mapper.readTree(resp.body());
-            int code = root.path("code").asInt(-1);
-            String msg = root.path("msg").asText("");
+            int code = root.path("code").asInt(root.path("errorcode").asInt(-1));
+            String msg = root.path("msg").asText(root.path("errormsg").asText(""));
             JsonNode data = root.path("data");
             boolean hasAuth = !data.path("userAuth").asText("").isBlank();
 

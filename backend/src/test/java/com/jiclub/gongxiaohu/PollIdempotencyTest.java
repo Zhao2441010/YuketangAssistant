@@ -24,7 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"gongxiaohu.mode=mock"})
+@TestPropertySource(properties = {"gongxiaohu.mode=mock", "gongxiaohu.session-store="})
 class PollIdempotencyTest {
 
     @Autowired MockMvc mvc;

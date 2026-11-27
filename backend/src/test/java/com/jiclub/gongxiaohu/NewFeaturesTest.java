@@ -18,7 +18,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /** 新功能接口层测试：提前获取题目 + 会话自动续期（mock 模式）。 */
 @SpringBootTest
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"gongxiaohu.mode=mock"})
+@TestPropertySource(properties = {"gongxiaohu.mode=mock", "gongxiaohu.session-store="})
 class NewFeaturesTest {
 
     @Autowired MockMvc mvc;

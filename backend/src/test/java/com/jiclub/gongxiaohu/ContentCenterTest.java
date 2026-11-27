@@ -18,7 +18,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /** 课程中心接口测试（mock 模式）：课程活动 → 课件页 + 教师题目。 */
 @SpringBootTest
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"gongxiaohu.mode=mock"})
+@TestPropertySource(properties = {"gongxiaohu.mode=mock", "gongxiaohu.session-store="})
 class ContentCenterTest {
 
     @Autowired MockMvc mvc;

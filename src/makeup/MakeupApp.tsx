@@ -2,15 +2,17 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Clock,
   FileQuestion, Image as ImageIcon, Layers, Loader2, LogOut, MapPin, Maximize2, Minimize2,
-  Monitor, MousePointer2, Plus, RefreshCw, Send, Smartphone, User, Wifi, X
+  Monitor, MousePointer2, Plus, RefreshCw, Send, Smartphone, Trash2, User, Wifi, X
 } from 'lucide-react';
 import {
   Course, Quiz, SubmitResult, ClassroomView, DiagnosticReport, JoinLessonResult,
-  checkSession, clearDiagnostics, clearToken, fetchClassroomRender, fetchCourses,
-  fetchAllCourseware, fetchDiagnostics, fetchEntryCookie, fetchInClassQuizzes, getToken, imageUrl, joinLesson,
-  type LessonInfoProbe, probeLessonInfo, enterLesson, type LessonEnterResult,
-  keepAlive, logout, saveDraft, submitInClassAnswer, uploadImage
+  activateAccount, checkSession, clearDiagnostics, clearToken, fetchClassroomRender, fetchCourses,
+  fetchAllCourseware, fetchDiagnostics, fetchEntryCookie, fetchInClassQuizzes, getAccounts, getActiveAccount,
+  getToken, hydrateAuth, imageUrl, joinLesson, revokeAccount, enterLesson,
+  type LessonInfoProbe, type LessonEnterResult, probeLessonInfo,
+  keepAlive, logout, saveDraft, submitInClassAnswer, updateActiveAccount, uploadImage
 } from './api';
+import type { StoredAccount } from './authStore';
 import { isNativeApp, openOfficialClassroomSession } from './classroomEntry';
 import LoginView from './LoginView';
 import CourseCenter, { ProblemCard, parseProblem, type ProblemView } from './CourseCenter';
@@ -239,11 +241,107 @@ const QuizCard: React.FC<{
   );
 };
 
+/** 把时间戳变成"刚刚 / N 分钟前 / 昨天"这种更好读的文案。 */
+function formatLastUsed(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return '刚刚';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+/** 账号管理底部弹层：切换 / 添加 / 删除 / 退出当前账号。 */
+const AccountSheet: React.FC<{
+  accounts: StoredAccount[];
+  activeId: string | null;
+  busyId: string | null;
+  onClose: () => void;
+  onSwitch: (id: string) => void;
+  onAdd: () => void;
+  onDelete: (id: string) => void;
+  onLogout: () => void;
+}> = ({ accounts, activeId, busyId, onClose, onSwitch, onAdd, onDelete, onLogout }) => (
+  <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" role="dialog" aria-modal="true">
+    <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={onClose} />
+    <div className="relative w-full max-w-[520px] bg-white rounded-t-[28px] sm:rounded-[28px] p-5 pb-7 sm:pb-5 space-y-4 shadow-2xl max-h-[88vh] overflow-y-auto">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-bold text-[#1C1C1E]">账号管理</h2>
+          <p className="text-[11px] text-[#8E8E93] mt-0.5">登录状态保存在本机，重开 App 自动恢复上次账号</p>
+        </div>
+        <button onClick={onClose} aria-label="关闭"
+          className="w-8 h-8 shrink-0 rounded-full bg-[#F2F2F7] flex items-center justify-center text-[#8E8E93] hover:bg-[#E5E5EA]">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="space-y-2">
+        {accounts.map(acc => {
+          const active = acc.id === activeId;
+          const busy = acc.id === busyId;
+          return (
+            <div key={acc.id}
+              className={`flex items-center gap-2.5 p-3 rounded-2xl border transition-all ${
+                active ? 'border-[#007AFF]/30 bg-blue-50/60' : 'border-black/[0.06] bg-[#F9F9FB]'
+              }`}>
+              <button onClick={() => onSwitch(acc.id)} disabled={busy || active}
+                className="flex-1 min-w-0 flex items-center gap-3 text-left disabled:cursor-default">
+                <span className="w-9 h-9 shrink-0 rounded-full bg-[#007AFF]/10 text-[#007AFF] text-sm font-bold flex items-center justify-center">
+                  {(acc.userId || '?').slice(0, 1).toUpperCase()}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-[#1C1C1E] truncate">{acc.userId || '未命名账号'}</span>
+                  <span className="block text-[10px] text-[#8E8E93]">
+                    {active ? '当前账号' : `上次使用 ${formatLastUsed(acc.lastUsedAt)}`}
+                    {acc.token ? '' : ' · 需重新登录'}
+                  </span>
+                </span>
+              </button>
+              {busy
+                ? <Loader2 className="w-4 h-4 shrink-0 animate-spin text-[#007AFF]" />
+                : active
+                  ? <span className="shrink-0 text-[10px] font-semibold text-emerald-600 px-1.5">当前</span>
+                  : (
+                    <button onClick={() => onSwitch(acc.id)}
+                      className="shrink-0 text-[11px] font-semibold text-[#007AFF] px-2 py-1 rounded-lg hover:bg-[#007AFF]/10">
+                      切换
+                    </button>
+                  )}
+              <button onClick={() => onDelete(acc.id)} title="删除账号"
+                className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[#C7C7CC] hover:text-red-500 hover:bg-red-50">
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <button onClick={onAdd}
+        className="w-full py-3 rounded-2xl border border-dashed border-[#007AFF]/40 text-[#007AFF] text-sm font-semibold flex items-center justify-center gap-1.5 hover:bg-[#007AFF]/5 active:scale-[0.99] transition-all">
+        <Plus className="w-4 h-4" /> 添加另一个账号
+      </button>
+      <button onClick={onLogout}
+        className="w-full py-3 rounded-2xl bg-red-50 text-red-600 text-sm font-semibold flex items-center justify-center gap-1.5 hover:bg-red-100 active:scale-[0.99] transition-all">
+        <LogOut className="w-4 h-4" /> 退出当前账号
+      </button>
+      <p className="text-center text-[10px] text-[#AEAEB2] leading-relaxed">
+        退出会从本机删除当前账号凭据；其他账号不受影响。
+      </p>
+    </div>
+  </div>
+);
+
 export default function MakeupApp() {
   // 登录守卫：启动校验本地 token，未登录显示扫码页
   const [authChecking, setAuthChecking] = useState(true);
   const [loggedIn, setLoggedIn] = useState(false);
   const [userId, setUserId] = useState<string>('');
+  // v1.2：本机保存的账号列表（可切换多个账号）
+  const [accounts, setAccounts] = useState<StoredAccount[]>([]);
+  const [showAccounts, setShowAccounts] = useState(false);
+  const [addingAccount, setAddingAccount] = useState(false);
+  const [switchingId, setSwitchingId] = useState<string | null>(null);
 
   const [courses, setCourses] = useState<Course[]>([]);
   const [allCourses, setAllCourses] = useState<Course[]>([]);
@@ -259,7 +357,6 @@ export default function MakeupApp() {
   const [classroom, setClassroom] = useState<ClassroomView | null>(null);
   const [classroomJoin, setClassroomJoin] = useState<JoinLessonResult | null>(null);
   const [classroomLoading, setClassroomLoading] = useState(false);
-  // 免扫码进班：在读学生凭登录态建立官方课堂会话的结果（按课程缓存展示）
   const [enterResult, setEnterResult] = useState<Record<string, LessonEnterResult>>({});
   const [enteringId, setEnteringId] = useState<string | null>(null);
 
@@ -268,21 +365,27 @@ export default function MakeupApp() {
     window.setTimeout(() => setToast(null), 2500);
   };
 
-  // 启动时校验本地会话；无 token 或失效 → 展示登录页
+  // 启动时恢复本机保存的账号并校验会话；没有账号或已失效 → 展示登录页
   useEffect(() => {
     let active = true;
     (async () => {
-      if (!getToken()) {
-        if (active) { setAuthChecking(false); setLoggedIn(false); }
-        return;
-      }
       try {
-        // 静默续签：临近过期自动续期，token 失效但有 sessionid 则无感重导
+        await hydrateAuth();
+        if (!active) return;
+        setAccounts(getAccounts());
+        if (!getActiveAccount()) {
+          setLoggedIn(false);
+          return;
+        }
+        // 静默续签：token 失效但有 sessionid 则无感重导；临近过期自动续期
         const alive = await keepAlive();
         if (!active) return;
         if (alive) {
           const info = await checkSession();
-          setUserId(info.userId);
+          if (!active) return;
+          if (info.userId) updateActiveAccount({ userId: info.userId });
+          setAccounts(getAccounts());
+          setUserId(info.userId || getActiveAccount()?.userId || '');
           setLoggedIn(true);
         } else {
           clearToken();
@@ -303,18 +406,80 @@ export default function MakeupApp() {
     loggedInAt.current = Date.now();
     setUserId(id);
     setLoggedIn(true);
+    setAddingAccount(false);
+    setShowAccounts(false);
+    setAccounts(getAccounts());
+    showToast(`已登录 ${id}`);
+  };
+
+  /** 切换账号：激活本地凭据 → 保活/无感重建 → 刷新账号信息。 */
+  const switchAccount = async (id: string) => {
+    const current = getActiveAccount();
+    if (current?.id === id && loggedIn) { setShowAccounts(false); return; }
+    setSwitchingId(id);
+    try {
+      const acc = activateAccount(id);
+      if (!acc) return;
+      setAccounts(getAccounts());
+      setUserId(acc.userId);
+      setActiveCourse(null);
+      setQuizzes([]);
+      setClassroom(null);
+      setClassroomJoin(null);
+      const alive = await keepAlive();
+      if (alive) {
+        const info = await checkSession();
+        if (info.userId) updateActiveAccount({ userId: info.userId });
+        setAccounts(getAccounts());
+        setUserId(info.userId || acc.userId);
+        setLoggedIn(true);
+        setShowAccounts(false);
+        setAddingAccount(false);
+        showToast(`已切换到 ${info.userId || acc.userId || '账号'}`);
+      } else {
+        setLoggedIn(false);
+        setShowAccounts(false);
+        showToast('该账号登录已失效，请重新登录');
+      }
+    } finally {
+      setSwitchingId(null);
+      setAccounts(getAccounts());
+    }
+  };
+
+  const handleDeleteAccount = async (id: string) => {
+    const acc = accounts.find(a => a.id === id);
+    if (!acc) return;
+    if (!window.confirm(`删除账号「${acc.userId || '未命名'}」？本机将不再保留它的登录信息。`)) return;
+    const wasActive = getActiveAccount()?.id === id;
+    setSwitchingId(id);
+    try {
+      await revokeAccount(id);
+      setAccounts(getAccounts());
+      if (wasActive) {
+        setLoggedIn(false);
+        setUserId('');
+        setAddingAccount(false);
+      }
+      showToast('账号已删除');
+    } finally {
+      setSwitchingId(null);
+      setAccounts(getAccounts());
+    }
   };
 
   const handleLogout = async () => {
-    try { await logout(); } catch { /* 忽略网络错误，本地清理即可 */ }
-    clearToken();
+    // logout() 内部：通知后端注销 + 从本机账号列表移除当前账号
+    await logout();
+    setAccounts(getAccounts());
     setLoggedIn(false);
     setUserId('');
     setActiveCourse(null);
     setQuizzes([]);
     setClassroom(null);
     setClassroomJoin(null);
-    showToast('已退出登录');
+    setShowAccounts(false);
+    showToast('已退出当前账号');
   };
 
   const loadCourses = useCallback(async (silent = false) => {
@@ -361,9 +526,32 @@ export default function MakeupApp() {
     );
   }
 
-  // 未登录 → 扫码页
+  // 添加账号：直接复用登录页，可随时取消回到原账号
+  if (addingAccount) {
+    return (
+      <LoginView
+        addingAccount
+        onLogin={handleLogin}
+        onCancel={() => setAddingAccount(false)}
+        savedAccounts={accounts}
+        activeAccountId={getActiveAccount()?.id ?? null}
+        onSwitchAccount={(id) => void switchAccount(id)}
+        busyAccountId={switchingId}
+      />
+    );
+  }
+
+  // 未登录 → 登录页（展示本机已保存账号，可一键切回）
   if (!loggedIn) {
-    return <LoginView onLogin={handleLogin} />;
+    return (
+      <LoginView
+        onLogin={handleLogin}
+        savedAccounts={accounts}
+        activeAccountId={getActiveAccount()?.id ?? null}
+        onSwitchAccount={(id) => void switchAccount(id)}
+        busyAccountId={switchingId}
+      />
+    );
   }
 
   const enterCourse = async (course: Course) => {
@@ -429,22 +617,31 @@ export default function MakeupApp() {
     }
   };
 
-  /** 免扫码进班：在读学生凭登录态直接建立官方课堂会话（lesson_info_v2 → userAuth → WSS hello）。 */
+  const patchAnswer = (quizId: string, patch: Partial<AnswerState>) => {
+    setAnswers(prev => ({ ...prev, [quizId]: { ...(prev[quizId] ?? emptyAnswer()), ...patch } }));
+  };
+
+  /**
+   * 免扫码进班（工小湖博客 §1 三步 + example1.py + course_helper 交叉验证）：
+   * 后端 checkin 换 lessonToken(socketJwt)+identityId → WSS hello 建立官方课堂会话。
+   */
   const enterClassroom = async (course: Course) => {
     setEnteringId(course.courseId);
     try {
       const result = await enterLesson(course.courseId);
       setEnterResult(prev => ({ ...prev, [course.courseId]: result }));
-      showToast(result.entered ? '已免扫码进入课堂会话' : (result.note || '免扫码进班未成功'));
+      showToast(result.entered
+        ? `已免扫码进班${result.serverOp ? '（' + result.serverOp + '）' : ''}`
+        : (result.note || '免扫码进班未成功'));
     } catch (e) {
+      setEnterResult(prev => ({ ...prev, [course.courseId]: {
+        lessonId: '', courseName: course.name, entered: false, serverOp: '', code: 0,
+        msg: '', note: `请求失败：${(e as Error).message}`
+      } }));
       showToast(`免扫码进班失败：${(e as Error).message}`);
     } finally {
       setEnteringId(null);
     }
-  };
-
-  const patchAnswer = (quizId: string, patch: Partial<AnswerState>) => {
-    setAnswers(prev => ({ ...prev, [quizId]: { ...(prev[quizId] ?? emptyAnswer()), ...patch } }));
   };
 
   const handleSubmit = async (quiz: Quiz) => {
@@ -503,6 +700,18 @@ export default function MakeupApp() {
     return (
       <div className="min-h-screen bg-[#F2F2F7] text-[#1C1C1E]">
         {toast && <Toast message={toast} />}
+        {showAccounts && (
+          <AccountSheet
+            accounts={accounts}
+            activeId={getActiveAccount()?.id ?? null}
+            busyId={switchingId}
+            onClose={() => setShowAccounts(false)}
+            onSwitch={(id) => void switchAccount(id)}
+            onAdd={() => { setShowAccounts(false); setAddingAccount(true); }}
+            onDelete={(id) => void handleDeleteAccount(id)}
+            onLogout={() => void handleLogout()}
+          />
+        )}
         <header className="bg-white/90 backdrop-blur-md border-b border-black/[0.06] sticky top-0 z-20">
           <div className="max-w-3xl mx-auto px-5 h-14 flex items-center gap-3">
             <div className="w-8 h-8 rounded-xl bg-[#007AFF] flex items-center justify-center text-white">
@@ -512,10 +721,15 @@ export default function MakeupApp() {
               <h1 className="text-[15px] font-bold leading-tight">当前上课中</h1>
               <p className="text-[11px] text-[#8E8E93]">工小湖 · 超时补答</p>
             </div>
-            <div className="flex items-center gap-1.5 text-[11px] text-[#8E8E93] max-w-[120px] truncate" title={userId}>
-              <User className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">{userId}</span>
-            </div>
+            <button
+              onClick={() => setShowAccounts(true)}
+              title="账号管理"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-[#F2F2F7] text-[11px] text-[#3A3A3C] max-w-[132px] hover:bg-[#E5E5EA] active:scale-[0.98] transition-all"
+            >
+              <User className="w-3.5 h-3.5 shrink-0 text-[#8E8E93]" />
+              <span className="truncate">{userId || '账号'}</span>
+              <ChevronDown className="w-3 h-3 shrink-0 text-[#8E8E93]" />
+            </button>
             <button onClick={() => setShowCourseCenter(true)} title="课程中心" className="w-8 h-8 rounded-full bg-[#007AFF]/10 flex items-center justify-center text-[#007AFF] hover:bg-[#007AFF]/20">
               <Layers className="w-4 h-4" />
             </button>
@@ -580,8 +794,8 @@ export default function MakeupApp() {
                   <button
                     onClick={() => void enterClassroom(course)}
                     disabled={enteringId === course.courseId}
-                    title="在读学生凭登录态直接建立官方课堂会话（lesson_info_v2 → userAuth → WSS hello，无需扫码）"
-                    className="px-4 py-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-semibold hover:bg-emerald-100 active:scale-[0.99] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+                    title="免扫码进班：checkin 换课堂凭据 → WSS hello 建立官方课堂会话"
+                    className="px-4 py-3 rounded-2xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 active:scale-[0.99] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
                   >
                     {enteringId === course.courseId ? <Loader2 className="w-4 h-4 animate-spin" /> : '免扫码进班'}
                   </button>
@@ -597,14 +811,14 @@ export default function MakeupApp() {
                   </button>
                 </div>
                 {enterResult[course.courseId] && (
-                  <div className={`rounded-2xl px-4 py-3 text-xs leading-relaxed border ${
+                  <div className={`mt-2 p-3 rounded-xl text-xs ${
                     enterResult[course.courseId].entered
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                      : 'bg-amber-50 border-amber-200 text-amber-800'
+                      ? 'bg-emerald-50 text-emerald-700'
+                      : 'bg-amber-50 text-amber-700'
                   }`}>
                     {enterResult[course.courseId].entered
-                      ? <span className="flex items-center gap-1.5"><CheckCircle2 className="w-4 h-4" />{enterResult[course.courseId].note}</span>
-                      : <span>{enterResult[course.courseId].note}</span>}
+                      ? `✅ 已免扫码进班${enterResult[course.courseId].serverOp ? `（服务端 op=${enterResult[course.courseId].serverOp}）` : ''}`
+                      : `⚠️ ${enterResult[course.courseId].note}`}
                   </div>
                 )}
               </div>
@@ -619,6 +833,18 @@ export default function MakeupApp() {
   return (
     <div className="min-h-screen bg-[#F2F2F7] text-[#1C1C1E]">
       {toast && <Toast message={toast} />}
+      {showAccounts && (
+        <AccountSheet
+          accounts={accounts}
+          activeId={getActiveAccount()?.id ?? null}
+          busyId={switchingId}
+          onClose={() => setShowAccounts(false)}
+          onSwitch={(id) => void switchAccount(id)}
+          onAdd={() => { setShowAccounts(false); setAddingAccount(true); }}
+          onDelete={(id) => void handleDeleteAccount(id)}
+          onLogout={() => void handleLogout()}
+        />
+      )}
       <header className="bg-white/90 backdrop-blur-md border-b border-black/[0.06] sticky top-0 z-20">
         <div className="max-w-3xl mx-auto px-4 h-14 flex items-center gap-2.5">
           <button
@@ -631,6 +857,15 @@ export default function MakeupApp() {
             <h1 className="text-[15px] font-bold truncate">{activeCourse.name} · 随堂补答</h1>
             <p className="text-[11px] text-[#8E8E93]">随堂题已随课件下发，超时后老师未收题仍可提交</p>
           </div>
+          <button
+            onClick={() => setShowAccounts(true)}
+            title="账号管理"
+            className="flex items-center gap-1 px-2 py-1.5 rounded-full bg-[#F2F2F7] text-[11px] text-[#3A3A3C] max-w-[110px] hover:bg-[#E5E5EA]"
+          >
+            <User className="w-3.5 h-3.5 shrink-0 text-[#8E8E93]" />
+            <span className="truncate">{userId || '账号'}</span>
+            <ChevronDown className="w-3 h-3 shrink-0 text-[#8E8E93]" />
+          </button>
           <Wifi className="w-4 h-4 text-emerald-500" />
         </div>
       </header>

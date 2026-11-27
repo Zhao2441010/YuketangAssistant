@@ -20,7 +20,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /** 登录链路测试：用户端 → 后端 → 雨课堂端（mock 网关）。 */
 @SpringBootTest
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"gongxiaohu.mode=mock"})
+@TestPropertySource(properties = {"gongxiaohu.mode=mock", "gongxiaohu.session-store="})
 class AuthFlowTest {
 
     @Autowired MockMvc mvc;

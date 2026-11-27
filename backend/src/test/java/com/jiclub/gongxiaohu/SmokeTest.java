@@ -24,7 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /** 冒烟测试：覆盖两大专属功能的完整链路。 */
 @SpringBootTest
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"gongxiaohu.mode=mock"})
+@TestPropertySource(properties = {"gongxiaohu.mode=mock", "gongxiaohu.session-store="})
 class SmokeTest {
 
     @Autowired MockMvc mvc;

@@ -3,6 +3,7 @@ package com.jiclub.gongxiaohu.gateway;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jiclub.gongxiaohu.common.BizException;
 import com.jiclub.gongxiaohu.config.AppProperties;
 import com.jiclub.gongxiaohu.model.AuthModels.SessionContext;
 import org.slf4j.Logger;
@@ -11,218 +12,176 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
-import java.net.URLEncoder;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
-import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 免扫码进班客户端（真实模式）：<b>在读学生凭登录态建立官方课堂会话</b>。
+ * 免扫码进课堂会话（工小湖博客 §1 + example1.py + course_helper 三源交叉验证）。
  *
- * <p>对应「正确实现链路.md」的官方学生端真实进班路径（以该文档为准，推翻早期靠 Cookie
- * 直接进班的推导）：
+ * <p>正确链路是「checkin 换课堂凭证 → WSS hello 建会话」，<b>不是</b> lesson_info_v2 的 userAuth：
  * <ol>
- *     <li>GET {@code /v/lesson/lesson_info_v2?lesson_id={lessonId}&source=5}
- *         —— 带全身份头（X-UID / X-CSRFToken / university-id / uv-id / classroom-id），
- *         返回 {@code data.userAuth}（课堂凭据，缺身份头即 500）；</li>
- *     <li>连 {@code wss://{region}.yuketang.cn/wsapp/}，发
- *         {@code {op:"hello", userid, avatar, role:"student", auth: userAuth, lessonid, presentation, ver:1}}
- *         建立实时会话。</li>
+ *     <li>POST {@code /api/v3/lesson/checkin} 换 {@code data.lessonToken}(=socketJwt) + {@code data.identityId}
+ *         + 响应头 {@code Set-Auth}(=pptJwt) —— 已由 {@link LessonCredentialClient} 实现；</li>
+ *     <li>WSS {@code /wsapp/} 发 5 字段 hello：{@code {op:"hello", userid:identityId, role:"student",
+ *         auth:lessonToken, lessonid:lessonId}} 建立实时会话。</li>
  * </ol>
  *
- * <p>与 {@code /api/v3/lesson/checkin} 的差异：checkin 是<b>签到动作</b>，开动态二维码的课堂会
- * 被 50070 拒绝；而 lesson_info_v2 是课堂页自己拉的<b>进班接口</b>，在读学生无需动态码。
- * 若 lesson_info_v2 仍返回 50070，说明该课堂只能本人扫码，本客户端如实回报、不做绕过。
+ * <p>两个独立开源实现（example1.py、course_helper）完全一致：hello 是 5 字段、auth=lessonToken、
+ * userid=identityId，无 ver/avatar/presentation。服务端收到 hello 后回 showpresentation / hello 等帧，
+ * 即代表课堂会话已建立。
  *
- * <p>凭据（userAuth）只留在后端内存，绝不回传前端、不写日志。
+ * <p><b>以参考项目 course_helper 为准</b>：WSS hello 的 {@code userid} 用登录态全局 user_id
+ * （即 {@link SessionContext#userId()}，对应 {@code /v/course_meta/user_info} 的
+ * {@code user_profile.user_id}），<b>不是</b> checkin 返回的 identityId（那是课堂内临时身份）。
+ * 若 SessionContext.userId 缺失才退回 identityId 兜底。auth 仍用 checkin 的 lessonToken(=socketJwt)。
  */
 @Component
 @ConditionalOnProperty(prefix = "gongxiaohu", name = "mode", havingValue = "real")
 public class LessonSessionClient {
     private static final Logger log = LoggerFactory.getLogger(LessonSessionClient.class);
-
-    /** hello 后等待服务端首个响应的秒数；超时但连接未断仍视为会话已建立。 */
-    static final int HELLO_ACK_TIMEOUT_SECONDS = 6;
-
     private static final String UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36";
+    /** 发出 hello 后等待服务端首帧的秒数；超时视为「已连上但课堂暂无推送」。 */
+    private static final int HELLO_ACK_TIMEOUT_SECONDS = 8;
 
+    private final LessonCredentialClient credentialClient;
     private final ObjectMapper mapper;
-    private final HttpClient http = HttpClient.newHttpClient();
-    private final String baseUrl;
+    private final HttpClient http;
     private final String wsUrl;
+    private final String baseUrl;
 
-    public LessonSessionClient(AppProperties properties, ObjectMapper mapper) {
+    public LessonSessionClient(LessonCredentialClient credentialClient, ObjectMapper mapper,
+                               AppProperties properties) {
+        this.credentialClient = credentialClient;
         this.mapper = mapper;
         AppProperties.YktGateway cfg = properties.yktGateway();
-        this.baseUrl = cfg.baseUrl() != null && !cfg.baseUrl().isBlank()
-                ? cfg.baseUrl() : "https://changjiang.yuketang.cn";
-        this.wsUrl = cfg.wsUrl() != null && !cfg.wsUrl().isBlank()
+        this.wsUrl = cfg != null && cfg.wsUrl() != null && !cfg.wsUrl().isBlank()
                 ? cfg.wsUrl() : "wss://changjiang.yuketang.cn/wsapp/";
+        this.baseUrl = cfg != null && cfg.baseUrl() != null && !cfg.baseUrl().isBlank()
+                ? cfg.baseUrl() : "https://changjiang.yuketang.cn";
+        this.http = HttpClient.newHttpClient();
     }
 
-    /** 免扫码进班结果（不含任何凭据）。 */
+    /** 免扫码进班结果。serverOp 为服务端回的首帧 op（如 showpresentation / hello），空串表示暂未推送。 */
     public record EnterResult(
             String lessonId,
             String courseName,
-            boolean entered,             // userAuthReady && socketEstablished
-            boolean userAuthReady,        // lesson_info_v2 是否换出课堂凭据 userAuth
-            boolean socketEstablished,    // WSS hello 会话是否建立
-            String serverOp,              // 服务端首个响应的 op（无即时响应则为空）
-            int code,                     // lesson_info_v2 业务码
+            boolean entered,
+            String serverOp,
+            int code,
             String msg,
             String note
     ) {}
 
     /**
-     * 免扫码进班主流程。
+     * 凭登录态免扫码进入课堂会话。
      *
-     * @param ctx    登录态（含 X-UID / csrftoken / university-id / uv-id / classroom-id）
-     * @param lesson 进行中课堂（含 classroomId / universityId 兜底）
+     * <p>成功判定：checkin 换到 lessonToken+identityId 且 WSS hello 发出后服务端回帧（或连接保持）。
+     * 动态码课堂若 checkin 返回 50070 且不下发 lessonToken，会如实返回失败，不做绕过。
      */
     public EnterResult enter(SessionContext ctx, YktGateway.CourseInfo lesson) {
-        String lessonId = lesson.lessonId();
+        String lessonId = lesson == null ? "" : lesson.lessonId();
+        String courseName = lesson == null ? "" : lesson.courseName();
+        // 真实 lessonId 是雪花 ID；"lesson-" 前缀说明网关只匹配到课表、课堂未进行中
+        if (lessonId == null || lessonId.isBlank() || lessonId.startsWith("lesson-")) {
+            return new EnterResult(lessonId, courseName, false, "", 409, "",
+                    "该课程当前未开课，无法免扫码进班");
+        }
 
-        // ① 拉 lesson_info_v2 换课堂凭据 userAuth（身份头缺任一字段即 500）
-        JsonNode data;
-        int code;
-        String msg;
+        LessonCredentialClient.LessonCredential credential;
         try {
-            String uni = !ctx.universityId().isBlank() ? ctx.universityId() : lesson.universityId();
-            String uv = !ctx.uvId().isBlank() ? ctx.uvId() : lesson.universityId();
-            String cls = !ctx.classroomId().isBlank() ? ctx.classroomId() : lesson.classroomId();
-            String cookieHeader = ctx.cookieHeader();
-            if (!cookieHeader.toLowerCase().contains("university_id") && !uni.isBlank()) {
-                cookieHeader += "; university_id=" + uni;
-            }
-            if (!cookieHeader.toLowerCase().contains("uv_id") && !uv.isBlank()) {
-                cookieHeader += "; uv_id=" + uv;
-            }
-            String url = baseUrl + "/v/lesson/lesson_info_v2?lesson_id="
-                    + URLEncoder.encode(lessonId, StandardCharsets.UTF_8) + "&source=5";
-            HttpRequest.Builder rb = HttpRequest.newBuilder(URI.create(url))
-                    .header("User-Agent", UA)
-                    .header("Accept", "application/json, text/plain, */*")
-                    .header("Cookie", cookieHeader)
-                    .header("xtbz", "ykt")
-                    .header("X-Client", "h5");
-            if (!ctx.userId().isBlank()) rb.header("X-UID", ctx.userId());
-            if (!ctx.csrftoken().isBlank()) rb.header("X-CSRFToken", ctx.csrftoken());
-            if (!uni.isBlank()) rb.header("university-id", uni);
-            if (!uv.isBlank()) rb.header("uv-id", uv);
-            if (!cls.isBlank()) rb.header("classroom-id", cls);
+            credential = credentialClient.enterLesson(ctx, lessonId);
+        } catch (BizException e) {
+            return new EnterResult(lessonId, courseName, false, "",
+                    e.getCode(), e.getMessage(), e.getMessage());
+        }
 
-            HttpResponse<String> resp = http.send(rb.GET().build(), HttpResponse.BodyHandlers.ofString());
-            JsonNode root = mapper.readTree(resp.body());
-            data = root.path("data");
-            code = root.path("code").isNumber() ? root.path("code").asInt() : -1;
-            msg = root.path("msg").asText("");
-            log.info("免扫码进班 lesson_info_v2 lessonId={} http={} code={} 有userAuth={}",
-                    lessonId, resp.statusCode(), code, !data.path("userAuth").asText("").isBlank());
+        String lessonToken = credential.socketJwt();
+        String identityId = credential.identityId();
+        if (lessonToken == null || lessonToken.isBlank()) {
+            return new EnterResult(lessonId, courseName, false, "", 500, "",
+                    "checkin 成功但未返回 lessonToken，无法建立课堂会话");
+        }
+        // userid：course_helper 用登录态 user_id(=SessionContext.userId)，example1.py 用 identityId。
+        // 以参考项目 course_helper 为准，userId 缺失时退回 identityId 兜底。
+        String userid = (ctx.userId() != null && !ctx.userId().isBlank())
+                ? ctx.userId() : identityId;
+        if (userid == null || userid.isBlank()) {
+            return new EnterResult(lessonId, courseName, false, "", 500, "",
+                    "checkin 成功但未返回 userid/identityId，无法建立课堂会话");
+        }
+
+        try {
+            String serverOp = establishSession(userid, lessonToken, lessonId);
+            log.info("免扫码进班成功 lessonId={} courseName={} serverOp={}",
+                    lessonId, courseName, serverOp.isBlank() ? "(无首帧)" : serverOp);
+            return new EnterResult(lessonId, courseName, true, serverOp, 0, "",
+                    "已免扫码进入课堂会话（checkin 换 lessonToken → WSS hello）"
+                            + (serverOp.isBlank() ? "" : "，服务端首帧 op=" + serverOp));
         } catch (Exception e) {
-            log.warn("免扫码进班 lesson_info_v2 异常 lessonId={}: {}", lessonId, e.getMessage());
-            return new EnterResult(lessonId, lesson.courseName(), false, false, false, "",
-                    -1, "", "进班接口请求失败：" + e.getMessage());
+            log.warn("免扫码进班 WSS 建会话失败 lessonId={}: {}", lessonId, e.getMessage());
+            return new EnterResult(lessonId, courseName, false, "", 500, "",
+                    "建立课堂会话失败：" + e.getMessage());
         }
-
-        String userAuth = data.path("userAuth").asText("");
-        if (userAuth.isBlank()) {
-            String note = code == 50070
-                    ? "该课堂已开启动态二维码签到，只能本人扫码进班"
-                    : code == 50000
-                        ? "登录态已失效，请重新登录"
-                        : "未换出课堂凭据：" + msg;
-            return new EnterResult(lessonId, lesson.courseName(), false, false, false,
-                    "", code, msg, note);
-        }
-
-        // ② WSS hello 建立实时会话
-        String userid = !ctx.userId().isBlank() ? ctx.userId() : data.path("userID").asText("");
-        String avatar = data.path("avatar").asText("");
-        String presentation = data.path("activePresentationID").asText("");
-        SocketOutcome socket = establishSession(userid, avatar, userAuth, lessonId, presentation);
-
-        boolean entered = socket.established();
-        String note = socket.established()
-                ? (socket.serverOp().isBlank()
-                    ? "已凭登录态换取课堂凭据并建立 WebSocket 会话（服务端暂无即时推送）"
-                    : "已凭登录态换取课堂凭据并建立 WebSocket 会话（首帧 op=" + socket.serverOp() + "）")
-                : "已换出课堂凭据，但 WebSocket 会话建立失败：" + socket.note();
-        return new EnterResult(lessonId, lesson.courseName(), entered, true,
-                socket.established(), socket.serverOp(), code, msg, note);
     }
 
-    private record SocketOutcome(boolean established, String serverOp, String note) {}
-
-    /** 连 wsapp、发 hello、等待服务端首个响应。 */
-    private SocketOutcome establishSession(String userid, String avatar, String userAuth,
-                                           String lessonId, String presentation) {
-        HelloFlow flow = new HelloFlow();
+    /** 连接 wsapp、发 5 字段 hello，返回服务端首帧 op（超时返回空串）。 */
+    private String establishSession(String userid, String lessonToken, String lessonId) throws Exception {
+        String helloJson = helloPayload(mapper, userid, lessonToken, lessonId);
+        CompletableFuture<String> firstOp = new CompletableFuture<>();
+        WebSocket ws = http.newWebSocketBuilder()
+                .header("Origin", baseUrl)
+                .header("User-Agent", UA)
+                .buildAsync(URI.create(wsUrl), listener(firstOp))
+                .get(20, TimeUnit.SECONDS);
         try {
-            WebSocket ws = http.newWebSocketBuilder()
-                    .header("Origin", baseUrl)
-                    .header("User-Agent", UA)
-                    .buildAsync(URI.create(wsUrl), listener(flow))
-                    .get(20, TimeUnit.SECONDS);
-            flow.ws = ws;
-            String hello = helloPayload(mapper, userid, avatar, userAuth, lessonId, presentation, 1);
-            ws.sendText(hello, true).get(5, TimeUnit.SECONDS);
-
-            String serverOp = "";
+            ws.sendText(helloJson, true).get(5, TimeUnit.SECONDS);
             try {
-                JsonNode first = flow.firstMessage.get(HELLO_ACK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-                serverOp = first.path("op").asText("");
+                return firstOp.get(HELLO_ACK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             } catch (java.util.concurrent.TimeoutException e) {
-                // 未收到即时响应，但连接保持 —— 会话已建立（服务端可能只在有事件时才推送）
+                // 连接保持、hello 已发出，但课堂暂无推送帧 —— 仍视为会话已建立
+                return "";
             }
-            // 会话已建立：断开探测连接（真实长连接由各端按需自持）
+        } finally {
             closeQuietly(ws);
-            return new SocketOutcome(true, serverOp, "");
-        } catch (Exception e) {
-            closeQuietly(flow.ws);
-            return new SocketOutcome(false, "", e.getMessage() == null ? e.toString() : e.getMessage());
         }
     }
 
-    /** 包可见：hello 负载，供单测验证字段。 */
-    static String helloPayload(ObjectMapper mapper, String userid, String avatar, String auth,
-                               String lessonid, String presentation, int ver) {
-        ObjectNode node = mapper.createObjectNode();
-        node.put("op", "hello");
-        node.put("userid", userid == null ? "" : userid);
-        node.put("avatar", avatar == null ? "" : avatar);
-        node.put("role", "student");
-        node.put("auth", auth == null ? "" : auth);
-        node.put("lessonid", lessonid == null ? "" : lessonid);
-        node.put("presentation", presentation == null ? "" : presentation);
-        node.put("ver", ver);
-        return node.toString();
+    /** 构建 5 字段 hello 负载（包可见，便于单测）。auth=lessonToken、userid=登录态 user_id。 */
+    static String helloPayload(ObjectMapper mapper, String userid, String auth, String lessonid) {
+        ObjectNode n = mapper.createObjectNode();
+        n.put("op", "hello");
+        n.put("userid", userid == null ? "" : userid);
+        n.put("role", "student");
+        n.put("auth", auth == null ? "" : auth);
+        n.put("lessonid", lessonid == null ? "" : lessonid);
+        return n.toString();
     }
 
-    private WebSocket.Listener listener(HelloFlow flow) {
+    private WebSocket.Listener listener(CompletableFuture<String> firstOp) {
         return new WebSocket.Listener() {
+            private final StringBuilder buffer = new StringBuilder();
+
             @Override
             public void onOpen(WebSocket ws) {
-                flow.ws = ws;
                 ws.request(1);
             }
 
             @Override
             public CompletionStage<?> onText(WebSocket ws, CharSequence data, boolean last) {
-                flow.buffer.append(data);
+                buffer.append(data);
                 if (last) {
-                    String message = flow.buffer.toString();
-                    flow.buffer.setLength(0);
-                    if (!flow.firstMessage.isDone()) {
+                    String message = buffer.toString();
+                    buffer.setLength(0);
+                    if (!firstOp.isDone()) {
                         try {
-                            flow.firstMessage.complete(mapper.readTree(message));
+                            JsonNode node = mapper.readTree(message);
+                            firstOp.complete(node.path("op").asText(""));
                         } catch (Exception e) {
-                            flow.firstMessage.completeExceptionally(e);
+                            firstOp.complete("");
                         }
                     }
                 }
@@ -232,17 +191,18 @@ public class LessonSessionClient {
 
             @Override
             public CompletionStage<?> onClose(WebSocket ws, int statusCode, String reason) {
-                if (!flow.firstMessage.isDone()) {
-                    flow.firstMessage.completeExceptionally(
-                            new IllegalStateException("WebSocket 关闭 code=" + statusCode + " reason=" + reason));
+                // 服务端在 hello 后主动关闭连接 = 认证被拒（lessonToken 无效）
+                if (!firstOp.isDone()) {
+                    firstOp.completeExceptionally(
+                            new IllegalStateException("服务端关闭连接 code=" + statusCode + " reason=" + reason));
                 }
                 return null;
             }
 
             @Override
             public void onError(WebSocket ws, Throwable error) {
-                if (!flow.firstMessage.isDone()) {
-                    flow.firstMessage.completeExceptionally(error);
+                if (!firstOp.isDone()) {
+                    firstOp.completeExceptionally(error);
                 }
             }
         };
@@ -252,12 +212,5 @@ public class LessonSessionClient {
         if (ws != null) {
             try { ws.abort(); } catch (Exception ignored) {}
         }
-    }
-
-    /** 包可见，供单测。 */
-    static final class HelloFlow {
-        final CompletableFuture<JsonNode> firstMessage = new CompletableFuture<>();
-        final StringBuilder buffer = new StringBuilder();
-        volatile WebSocket ws;
     }
 }

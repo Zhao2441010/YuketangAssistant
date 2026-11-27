@@ -18,7 +18,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /** 全量课件抓取：必须包含尚未播放的课时，且 ZIP 可直接下载。 */
 @SpringBootTest
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"gongxiaohu.mode=mock"})
+@TestPropertySource(properties = {"gongxiaohu.mode=mock", "gongxiaohu.session-store="})
 class FullCoursewareTest {
 
     @Autowired MockMvc mvc;

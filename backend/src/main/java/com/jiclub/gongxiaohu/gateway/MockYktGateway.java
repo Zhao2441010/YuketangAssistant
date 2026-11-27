@@ -139,7 +139,7 @@ public class MockYktGateway implements YktGateway {
             return false;
         }
         String sessionKey = "ykt-sk-" + UUID.randomUUID().toString().replace("-", "");
-        String userId = "2026" + String.valueOf(Math.abs(ticket.hashCode())).substring(0, 8);
+        String userId = "2026" + String.format("%08d", Math.abs(ticket.hashCode()) % 100_000_000);
         future.complete(new AuthCredential(userId, sessionKey));
         log.info("模拟扫码确认成功 ticket={} userId={}", ticket, userId);
         return true;

@@ -1,9 +1,27 @@
 // 超时补答前端 - API 封装与类型定义
 // 后端地址：默认 http://localhost:8080/api/v1，可通过 VITE_API_BASE_URL 覆盖
+//
+// v1.2：凭据统一交给 authStore 管理（多账号 + 原生持久化）。
+
+import {
+  activateAccount,
+  clearToken as clearStoredToken,
+  getAccounts,
+  getActiveAccount,
+  getSessionId,
+  getToken,
+  hydrateAuth,
+  isHydrated,
+  persistAuth,
+  removeAccount,
+  saveLoginAccount,
+  setSessionId,
+  setToken,
+  updateActiveAccount
+} from './authStore';
+import type { LoginKind, StoredAccount } from './authStore';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://localhost:8080/api/v1';
-const TOKEN_KEY = 'gxH_sessionToken';
-const SESSION_ID_KEY = 'gxH_sessionId';   // 真实 sessionid，用于 token 过期时无感续期
 
 export interface Course {
   courseId: string;
@@ -80,46 +98,29 @@ export interface ApiResponse<T> {
   data: T;
 }
 
-// ============ 本地会话 token 管理 ============
-/*
- * 2026-11-25：内存兜底。Android WebView 在 file:// / 某些内嵌环境下
- * localStorage.setItem 会抛 SecurityError（或 silently 不落盘）。
- * 旧实现里 pollLogin 拿到 token 后调 setToken 抛异常 → 前端当成"轮询失败"继续重试，
- * 而后端已经记录 LOGIN_OK —— 表现就是"后端登录成功、前端卡在二维码页"。
- * 现在：先写内存变量，localStorage 只做持久化增强，写不进去也不影响本次登录。
- */
-let memoryToken: string | null = null;
-let memorySessionId: string | null = null;
+// ============ 本地会话/账号管理 ============
+// 具体实现见 authStore.ts：原生 SharedPreferences 优先，localStorage 兜底，
+// 支持保存多个账号并记住上一次使用的账号。
 
-export function getToken(): string | null {
-  try {
-    const stored = localStorage.getItem(TOKEN_KEY);
-    if (stored) return stored;
-  } catch { /* WebView 禁用存储时忽略 */ }
-  return memoryToken;
-}
-export function setToken(token: string): void {
-  memoryToken = token;
-  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* 内存兜底已生效 */ }
-}
+export {
+  activateAccount,
+  getAccounts,
+  getActiveAccount,
+  getSessionId,
+  getToken,
+  hydrateAuth,
+  isHydrated,
+  persistAuth,
+  removeAccount,
+  setSessionId,
+  setToken,
+  updateActiveAccount
+};
+export type { StoredAccount, LoginKind };
+
+/** 只清当前账号的 token（保留 sessionid，下次可无感重建会话）。 */
 export function clearToken(): void {
-  memoryToken = null;
-  memorySessionId = null;
-  try {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(SESSION_ID_KEY);
-  } catch { /* 忽略 */ }
-}
-export function getSessionId(): string | null {
-  try {
-    const stored = localStorage.getItem(SESSION_ID_KEY);
-    if (stored) return stored;
-  } catch { /* 忽略 */ }
-  return memorySessionId;
-}
-export function setSessionId(sid: string): void {
-  memorySessionId = sid;
-  try { localStorage.setItem(SESSION_ID_KEY, sid); } catch { /* 内存兜底已生效 */ }
+  clearStoredToken();
 }
 
 async function request<T>(path: string, init?: RequestInit, auth = true, retried = false): Promise<T> {
@@ -161,7 +162,12 @@ async function silentRenew(): Promise<void> {
     body: JSON.stringify({ sessionId: sid })
   }).then(r => r.json()) as ApiResponse<LoginResult>;
   if (result.code !== 0) throw new Error(result.message);
-  setToken(result.data.token);
+  updateActiveAccount({
+    token: result.data.token,
+    sessionId: result.data.sessionKey || sid,
+    expiresAt: result.data.expiresAt
+  });
+  await persistAuth();
 }
 
 // ============ 登录链路 ============
@@ -185,8 +191,15 @@ export async function pollLogin(ticket: string, waitSeconds = 0): Promise<LoginR
     method: 'POST',
     body: JSON.stringify({ ticket, wait: String(waitSeconds) })
   }, false);
-  setToken(result.token);
-  setSessionId(result.sessionKey); // 保存真实 sessionid，供 token 过期时无感续期
+  saveLoginAccount({
+    userId: result.userId,
+    token: result.token,
+    sessionId: result.sessionKey,
+    mock: result.mock,
+    kind: 'qr',
+    expiresAt: result.expiresAt
+  });
+  await persistAuth();
   return result;
 }
 
@@ -199,8 +212,15 @@ export async function passwordLogin(
     method: 'POST',
     body: JSON.stringify({ account, password, type, ticket, randstr })
   }, false);
-  setToken(result.token);
-  setSessionId(result.sessionKey);
+  saveLoginAccount({
+    userId: result.userId,
+    token: result.token,
+    sessionId: result.sessionKey,
+    mock: result.mock,
+    kind: 'password',
+    expiresAt: result.expiresAt
+  });
+  await persistAuth();
   return result;
 }
 
@@ -223,15 +243,28 @@ export function renewSession(): Promise<SessionInfo> {
 }
 
 /**
- * 会话保活：若剩余不足 30 分钟则主动续期；失败则尝试无感重导。
- * 在页面加载与关键操作前调用，实现"静默续签"。
+ * 会话保活：
+ * 1. 只有 sessionid、没有 token（App 刚启动或上次 token 失效）→ 先无感重建；
+ * 2. token 有效则按需续期；
+ * 3. 后端返回 valid=false（例如后端重启、token 过期）→ 用 sessionid 重建后再查一次。
+ * 这样只要用户没主动退出，重开 App 也能自动回到登录态。
  */
 export async function keepAlive(): Promise<boolean> {
+  if (!getToken() && getSessionId()) {
+    try { await silentRenew(); } catch { return false; }
+  }
   try {
     const info = await checkSession();
-    if (!info.valid) return false;
+    if (!info.valid) {
+      if (!getSessionId()) return false;
+      try { await silentRenew(); } catch { return false; }
+      const again = await checkSession();
+      if (again.valid && again.userId) updateActiveAccount({ userId: again.userId });
+      return again.valid;
+    }
+    if (info.userId) updateActiveAccount({ userId: info.userId });
     if (info.remainingSeconds < 30 * 60 && info.renewable) {
-      await renewSession();
+      try { await renewSession(); } catch { /* 续期失败不影响当前使用 */ }
     }
     return true;
   } catch (e) {
@@ -242,9 +275,27 @@ export async function keepAlive(): Promise<boolean> {
   }
 }
 
-/** 退出登录 */
-export function logout(): Promise<void> {
-  return request<void>('/auth/logout', { method: 'POST' });
+/** 退出当前账号：通知后端注销，并从本机账号列表移除。 */
+export async function logout(): Promise<void> {
+  try {
+    await request<void>('/auth/logout', { method: 'POST' });
+  } catch { /* 后端不可达也要清本地 */ }
+  const active = getActiveAccount();
+  if (active) removeAccount(active.id);
+}
+
+/** 删除指定账号（如果还持有该账号的 token，顺带通知后端注销）。 */
+export async function revokeAccount(id: string): Promise<void> {
+  const acc = getAccounts().find(a => a.id === id);
+  if (acc?.token) {
+    try {
+      await fetch(`${API_BASE}/auth/logout`, {
+        method: 'POST',
+        headers: { 'X-Session-Token': acc.token }
+      });
+    } catch { /* 忽略网络错误，本地仍然删除 */ }
+  }
+  removeAccount(id);
 }
 
 // ============ 业务接口（自动携带 token） ============
@@ -308,24 +359,6 @@ export function probeLessonInfo(courseId: string): Promise<LessonInfoProbe> {
   return request<LessonInfoProbe>(`/lessons/lesson-info?courseId=${encodeURIComponent(courseId)}`);
 }
 
-/** 免扫码进班：在读学生凭登录态直接建立官方课堂会话（lesson_info_v2 → userAuth → WSS hello）。 */
-export interface LessonEnterResult {
-  lessonId: string;
-  courseName: string;
-  entered: boolean;          // userAuthReady && socketEstablished
-  userAuthReady: boolean;    // 是否换出课堂凭据 userAuth
-  socketEstablished: boolean; // WSS hello 会话是否建立
-  serverOp: string;          // 服务端首帧 op（无即时推送则空）
-  code: number;              // lesson_info_v2 业务码
-  msg: string;
-  note: string;
-}
-export function enterLesson(courseId: string): Promise<LessonEnterResult> {
-  return request<LessonEnterResult>(`/lessons/enter?courseId=${encodeURIComponent(courseId)}`, {
-    method: 'POST'
-  });
-}
-
 /** 方案④自渲染视图：后端持 pptJwt 拉好课件与题目，前端直接绘制。 */
 export interface ClassroomView {
   lessonId: string;
@@ -337,6 +370,23 @@ export interface ClassroomView {
 }
 export function fetchClassroomRender(entryId: string): Promise<ClassroomView> {
   return request<ClassroomView>(`/lessons/${encodeURIComponent(entryId)}/render`);
+}
+
+/** 免扫码进班结果：checkin 换 lessonToken → WSS hello 建立课堂会话。 */
+export interface LessonEnterResult {
+  lessonId: string;
+  courseName: string;
+  entered: boolean;          // 是否已在官方侧建立课堂会话
+  serverOp: string;          // 服务端回的首帧 op（showpresentation/hello 等，空串=暂无推送）
+  code: number;
+  msg: string;
+  note: string;
+}
+/** 免扫码进班（不经过 lesson_info_v2，走 checkin 换 lessonToken → WSS hello）。 */
+export function enterLesson(courseId: string): Promise<LessonEnterResult> {
+  return request<LessonEnterResult>(`/lessons/enter?courseId=${encodeURIComponent(courseId)}`, {
+    method: 'POST'
+  });
 }
 
 /** 验证诊断（§6.7）：后端把 checkin 的验证证据结构化返回，无需手工抓包。全部脱敏。 */
@@ -389,8 +439,15 @@ export async function importCookie(cookie: string, userId?: string): Promise<Log
     body: JSON.stringify({ cookie, userId: userId || '' })
   }).then(r => r.json()) as ApiResponse<LoginResult>;
   if (res.code !== 0) throw new Error(res.message || 'Cookie 导入失败');
-  setToken(res.data.token);
-  setSessionId(res.data.sessionKey);
+  saveLoginAccount({
+    userId: res.data.userId,
+    token: res.data.token,
+    sessionId: res.data.sessionKey,
+    mock: res.data.mock,
+    kind: 'cookie',
+    expiresAt: res.data.expiresAt
+  });
+  await persistAuth();
   return res.data;
 }
 

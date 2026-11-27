@@ -211,11 +211,10 @@ public class RealYktGateway implements YktGateway {
         } catch (Exception e) {
             log.debug("live 接口查询 lessonId 失败: {}", e.getMessage());
         }
-        return fetchCourseList(sessionKey).liveCourses().stream()
-                .filter(c -> c.courseId().equals(courseId))
-                .findFirst()
-                .map(c -> new CourseInfo("lesson-" + c.courseId(), c.courseId(),
-                        c.name(), c.status(), c.currentSlide(), c.classroomId(), c.universityId()));
+        // live 接口没有匹配到真实 lessonId：说明该课程此刻并不在进行中。
+        // 不再伪造 "lesson-{courseId}" 假 ID —— 它既不能 checkin（50016），也不能拼出
+        // 官方入口 URL，只会把「未开课」伪装成「可进班」。返回空，由上层提示未开课。
+        return Optional.empty();
     }
 
     @Override

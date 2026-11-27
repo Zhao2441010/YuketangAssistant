@@ -97,7 +97,7 @@ public class FullCoursewareService {
             try {
                 YktGateway.CourseInfo liveLesson = joinLessonService.findLiveLesson(sid, courseId);
                 if (liveLesson != null && !liveLesson.lessonId().isBlank()) {
-                    YktLiveLessonApi.LivePresentations live = liveApi.fetch(ctx, liveLesson.lessonId());
+                    YktLiveLessonApi.LivePresentations live = liveApi.fetch(ctx, liveLesson);
                     warnings.addAll(live.warnings());
                     List<CoursewarePresentation> cps = new ArrayList<>();
                     int declared = 0, fetched = 0;

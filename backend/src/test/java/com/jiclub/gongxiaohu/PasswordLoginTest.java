@@ -22,7 +22,7 @@ class PasswordLoginTest {
                 new AppProperties.YktGateway("changjiang", "https://changjiang.yuketang.cn",
                         "wss://changjiang.yuketang.cn/wsapp/", 10000, 35000, Map.of()),
                 new AppProperties.PasswordLogin(KEY, "2091064951", "/pc/login/verify_pwd_login/"),
-                "./data");
+                "./data", "");
         YktPasswordLoginApi api = new YktPasswordLoginApi(props, new ObjectMapper());
         String enc = api.encryptPassword("MyPass123");
         byte[] raw = Base64.getDecoder().decode(enc);

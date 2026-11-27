@@ -54,6 +54,10 @@ gongxiaohu:
   # 草稿图上传本地存储目录（相对路径或绝对路径）
   upload-dir: ./data/draft-images
 
+  # v1.2 持久登录：会话落盘文件（AES-GCM 加密，密钥由 join-signature.secret 派生）。
+  # 置空则只存内存（重启后需要重新登录）。生产部署务必保证可写并限制文件权限。
+  session-store: ./data/sessions.json
+
 logging:
   # 日志分流见 logback-spring.xml：
   #   logs/app.log   —— 运行/诊断日志（学号脱敏，14 天）

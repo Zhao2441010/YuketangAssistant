@@ -14,7 +14,9 @@ public record AppProperties(
         JoinSignature joinSignature,
         YktGateway yktGateway,
         PasswordLogin passwordLogin,
-        String uploadDir
+        String uploadDir,
+        /** v1.2 会话落盘文件；为空表示只存内存（测试环境）。 */
+        String sessionStore
 ) {
 
     /** 账号密码登录配置：RSA 公钥与滑块验证码 appid 均来自官方前端 login.js。 */

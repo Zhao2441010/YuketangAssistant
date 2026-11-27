@@ -91,6 +91,31 @@ public class LessonController {
     }
 
     /**
+     * 免扫码进课堂会话（工小湖博客 §1 + example1.py + course_helper 三源交叉验证）。
+     *
+     * <p>正确链路：checkin 换 lessonToken(socketJwt)+identityId → WSS hello 建会话。
+     * <b>不经过 lesson_info_v2 的 userAuth</b>（那是浏览器端接口，后端直连会 500）。
+     * 动态码课堂若 checkin 返回 50070 且不下发 lessonToken，会如实返回失败，不做绕过。
+     */
+    @PostMapping("/lessons/enter")
+    public ApiResponse<LessonSessionClient.EnterResult> enter(
+            @RequestParam String courseId,
+            @RequestHeader(value = "X-Session-Token", required = false) String token) {
+        if (token == null || token.isBlank()) {
+            throw new com.jiclub.gongxiaohu.common.BizException(401, "请先登录");
+        }
+        SessionContext ctx = authService.resolveContext(token);
+        YktGateway.CourseInfo lesson = service.findLiveLesson(ctx.sessionId(), courseId);
+        LessonSessionClient client = lessonSessionClient.getIfAvailable();
+        if (client == null) {
+            return ApiResponse.ok(new LessonSessionClient.EnterResult(
+                    lesson.lessonId(), lesson.courseName(), true, "hello", 0, "",
+                    "演示模式：已免扫码进班（未连真实课堂）"));
+        }
+        return ApiResponse.ok(client.enter(ctx, lesson));
+    }
+
+    /**
      * 为原生端（App 内 WebView）提供官方域 Cookie 注入所需的 L1 登录态。
      *
      * <p>博客「免扫码秒进班」链路：在读学生凭官方域 Cookie 打开固定入口即可进入课堂会话，
@@ -144,8 +169,10 @@ public class LessonController {
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36")
                     .header("Accept", "application/json, text/plain, */*")
                     .header("Cookie", cookieHeader)
+                    .header("sessionid", ctx.sessionId())          // Android 逆向：缺它即 401/50000
                     .header("xtbz", "ykt")
-                    .header("X-Client", "h5");
+                    .header("X-Client", "web")
+                    .header("xt-agent", "web");
             // 官方课堂页：window.userid 有值就带 X-UID；POST 场景还带 X-CSRFToken。
             // 缺 X-UID / classroom-id / university-id / uv-id 是 lesson_info_v2 返回 500 的直接原因
             // （官方服务端 'NoneType' object has no attribute 'set_cookie'）。
@@ -159,8 +186,9 @@ public class LessonController {
             com.fasterxml.jackson.databind.JsonNode root = objectMapper.readTree(resp.body());
             com.fasterxml.jackson.databind.JsonNode data = root.path("data");
             boolean hasAuth = !data.path("userAuth").asText("").isBlank();
-            int code = root.path("code").isNumber() ? root.path("code").asInt() : -1;
-            String msg = root.path("msg").asText("");
+            int code = root.path("code").isNumber() ? root.path("code").asInt()
+                    : root.path("errorcode").isNumber() ? root.path("errorcode").asInt() : -1;
+            String msg = root.path("msg").asText(root.path("errormsg").asText(""));
             String note = hasAuth
                     ? "在读学生可凭登录态换取课堂凭据（官方同款请求）"
                     : code == 50070
@@ -191,30 +219,6 @@ public class LessonController {
     public record LessonInfoProbe(
             String lessonId, String courseName, int httpStatus, int code, String msg,
             boolean hasUserAuth, int presentationCount, int quizCount, boolean hasClassroom, String note) {}
-
-    /**
-     * 免扫码进班：在读学生凭登录态直接建立官方课堂会话（lesson_info_v2 → userAuth → WSS hello），
-     * 全程不扫码、不 checkin。开动态二维码的课堂若被 50070 拦截则如实回报、不做绕过。
-     * 课堂凭据 userAuth 只留在后端内存，不回传、不写日志。
-     */
-    @PostMapping("/lessons/enter")
-    public ApiResponse<LessonSessionClient.EnterResult> enter(
-            @RequestParam String courseId,
-            @RequestHeader(value = "X-Session-Token", required = false) String token) {
-        if (token == null || token.isBlank()) {
-            throw new com.jiclub.gongxiaohu.common.BizException(401, "请先登录");
-        }
-        SessionContext ctx = authService.resolveContext(token);
-        YktGateway.CourseInfo lesson = service.findLiveLesson(ctx.sessionId(), courseId);
-        LessonSessionClient client = lessonSessionClient.getIfAvailable();
-        if (client == null) {
-            // mock 模式：无真实网关，返回演示结果
-            return ApiResponse.ok(new LessonSessionClient.EnterResult(
-                    lesson.lessonId(), lesson.courseName(), true, true, true,
-                    "", 0, "mock", "演示模式：已免扫码进班（未连真实课堂）"));
-        }
-        return ApiResponse.ok(client.enter(ctx, lesson));
-    }
 
     /** 官方域 Cookie 注入信息。 */
     public record EntryCookie(String domain, String cookie, String note) {}
